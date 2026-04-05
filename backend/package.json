@@ -1,0 +1,21 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "college_sem2_project title is Ml based attentive detection",
+  "license": "ISC",
+  "author": "",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "dev": "nodemon src/index.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "dependencies": {
+    "expres": "^0.0.5",
+    "nodemon": "^3.1.14",
+    "socket": "^1.1.77",
+    "websocket": "^1.0.35",
+    "ws": "^8.20.0"
+  }
+}
