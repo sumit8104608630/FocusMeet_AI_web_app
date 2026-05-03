@@ -151,6 +151,11 @@ const Meeting = () => {
             // PeerContext already listens for this, but we can log it here for debugging
         });
         socket.on('room-users', handleRoomUsers);
+        socket.on('user-left', ({ socketId: leftSocketId }) => {
+            console.log('User left:', leftSocketId);
+            // If the person who left was the one we were connected to, reset peer
+            resetPeer();
+        });
         socket.on('error', ({ message }) => {
             console.error('Socket error:', message);
             navigate('/dashboard');
@@ -173,6 +178,7 @@ const Meeting = () => {
             socket.off('offer', handleOffer);
             socket.off('answer', handleAnswer);
             socket.off('room-users', handleRoomUsers);
+            socket.off('user-left');
             socket.off('ice-candidate');
             socket.off('meeting-ended');
             socket.off('call-ended');

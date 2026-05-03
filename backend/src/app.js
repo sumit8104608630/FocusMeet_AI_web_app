@@ -202,6 +202,7 @@ io.on("connection", (socket) => {
     }); 
 
     socket.on("call-ended", async ({ to, meetingId }) => { 
+        console.log(`Call ended by ${userId} (socket: ${socket.id}) in meeting ${meetingId}`);
         if (meetingId) {
             try {
                 const meeting = await Meeting.findOne({ meetingId, status: 'ongoing' });
@@ -224,11 +225,15 @@ io.on("connection", (socket) => {
             } catch (err) { console.error('Call ended error:', err); }
             await removeParticipant(meetingId, socket.id);
             const participants = await getParticipants(meetingId);
+            io.to(meetingId).emit('user-left', { userId, socketId: socket.id });
             io.to(meetingId).emit('room-users', { meetingId, users: participants });
         }
-        const targetSocket = userSocketMap[to] || to; 
+        
+        if (to) {
+            const targetSocket = userSocketMap[to] || to; 
+            if (targetSocket) io.to(targetSocket).emit("call-ended", { from: userId, fromSocket: socket.id }); 
+        }
         delete activeCalls[socket.id]; 
-        if (targetSocket) io.to(targetSocket).emit("call-ended", { from: userId, fromSocket: socket.id }); 
     }); 
 
     socket.on("call-user", ({ to, from, signal, callType }) => { 
@@ -252,39 +257,56 @@ io.on("connection", (socket) => {
 
     socket.on("disconnect", async () => { 
         console.log(`User ${userId} disconnected (socket: ${socket.id})`);
-        // REMOVED: Automatic call-ended emission on disconnect.
-        // This allows for reload protection. The other user will stay in the room.
-        // The participant list will still update via the Redis cleanup below.
         
         if (activeCalls[socket.id]) { 
             delete activeCalls[socket.id]; 
         } 
 
-        if (redisClient.isOpen) {
-            try {
-                // Find which meeting this socket was in and remove it
+        // Cleanup meetings
+        try {
+            // Memory fallback cleanup
+            roomParticipants.forEach(async (participants, meetingId) => {
+                const index = participants.findIndex(p => p.socketId === socket.id);
+                if (index !== -1) {
+                    participants.splice(index, 1);
+                    const updatedParticipants = await getParticipants(meetingId);
+                    console.log(`Memory cleanup for socket ${socket.id} from meeting ${meetingId}`);
+                    io.to(meetingId).emit('user-left', { userId, socketId: socket.id });
+                    io.to(meetingId).emit('room-users', { meetingId, users: updatedParticipants });
+                    
+                    // Also update MongoDB
+                    const meeting = await Meeting.findOne({ meetingId, status: 'ongoing' });
+                    if (meeting) {
+                        meeting.members_info = meeting.members_info.filter(m => m.socketId !== socket.id);
+                        await meeting.save();
+                    }
+                }
+            });
+
+            // Redis cleanup
+            if (redisClient.isOpen) {
                 const keys = await redisClient.keys('meeting:*');
                 for (const key of keys) {
                     if (await redisClient.hExists(key, socket.id)) {
                         await redisClient.hDel(key, socket.id);
                         const meetingId = key.split(':')[1];
-                        const participants = await getParticipants(meetingId);
-                        console.log(`Cleaned up socket ${socket.id} from meeting ${meetingId}. Remaining: ${participants.length}`);
-                        io.to(meetingId).emit('room-users', { meetingId, users: participants });
+                        const updatedParticipants = await getParticipants(meetingId);
+                        console.log(`Redis cleanup for socket ${socket.id} from meeting ${meetingId}`);
+                        io.to(meetingId).emit('user-left', { userId, socketId: socket.id });
+                        io.to(meetingId).emit('room-users', { meetingId, users: updatedParticipants });
+                        
+                        // Also update MongoDB
+                        const meeting = await Meeting.findOne({ meetingId, status: 'ongoing' });
+                        if (meeting) {
+                            meeting.members_info = meeting.members_info.filter(m => m.socketId !== socket.id);
+                            await meeting.save();
+                        }
                     }
                 }
-            } catch (err) { console.error('Redis cleanup error:', err); }
-        }
-        
-        roomParticipants.forEach(async (participants, meetingId) => {
-            const index = participants.findIndex(p => p.socketId === socket.id);
-            if (index !== -1) {
-                participants.splice(index, 1);
-                const updatedParticipants = await getParticipants(meetingId);
-                console.log(`Memory cleanup for socket ${socket.id} from meeting ${meetingId}`);
-                io.to(meetingId).emit('room-users', { meetingId, users: updatedParticipants });
             }
-        });
+        } catch (err) {
+            console.error('Disconnect cleanup error:', err);
+        }
  
         if (userId && userSocketMap[userId] === socket.id) {
             delete userSocketMap[userId]; 
