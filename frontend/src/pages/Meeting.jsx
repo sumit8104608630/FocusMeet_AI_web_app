@@ -132,7 +132,7 @@ const Meeting = () => {
         }
     }, [user, startLocalStream]);
 
-    // Step 2: Join meeting only AFTER local stream is ready
+    // Step 2: Join meeting once stream is ready
     useEffect(() => {
         if (!socket || !user || !streamReady) return;
 
@@ -142,18 +142,20 @@ const Meeting = () => {
             userId: user.id,
             name: user.name 
         });
+    }, [socket, user, meetingId, streamReady]);
+
+    // Step 3: Set up socket listeners
+    useEffect(() => {
+        if (!socket || !user) return;
 
         socket.on('user-joined', handleUserJoined);
         socket.on('offer', handleOffer);
         socket.on('answer', handleAnswer);
-        socket.on('ice-candidate', ({ candidate }) => {
-            console.log('Received ice-candidate via socket');
-            // PeerContext already listens for this, but we can log it here for debugging
-        });
         socket.on('room-users', handleRoomUsers);
         socket.on('user-left', ({ socketId: leftSocketId }) => {
             console.log('User left:', leftSocketId);
-            // If the person who left was the one we were connected to, reset peer
+            // We only reset peer if we were in a call with this specific socket
+            // In the current PeerContext, we only have ONE peerRef, so any departure resets it
             resetPeer();
         });
         socket.on('error', ({ message }) => {
@@ -183,9 +185,8 @@ const Meeting = () => {
             socket.off('meeting-ended');
             socket.off('call-ended');
             socket.off('error');
-            resetPeer();
         };
-    }, [socket, user, meetingId, streamReady, handleUserJoined, handleOffer, handleAnswer, handleRoomUsers, resetPeer, navigate, isLeaving]);
+    }, [socket, user, handleUserJoined, handleOffer, handleAnswer, handleRoomUsers, resetPeer, navigate, isLeaving]);
 
     // Cleanup local stream tracks on unmount
     useEffect(() => {

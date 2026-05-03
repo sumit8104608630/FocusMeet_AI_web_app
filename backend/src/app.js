@@ -225,7 +225,7 @@ io.on("connection", (socket) => {
             } catch (err) { console.error('Call ended error:', err); }
             await removeParticipant(meetingId, socket.id);
             const participants = await getParticipants(meetingId);
-            io.to(meetingId).emit('user-left', { userId, socketId: socket.id });
+            io.to(meetingId).emit('user-left', { userId, socketId: socket.id, name: userName });
             io.to(meetingId).emit('room-users', { meetingId, users: participants });
         }
         
@@ -271,7 +271,7 @@ io.on("connection", (socket) => {
                     participants.splice(index, 1);
                     const updatedParticipants = await getParticipants(meetingId);
                     console.log(`Memory cleanup for socket ${socket.id} from meeting ${meetingId}`);
-                    io.to(meetingId).emit('user-left', { userId, socketId: socket.id });
+                    io.to(meetingId).emit('user-left', { userId, socketId: socket.id, name: userName });
                     io.to(meetingId).emit('room-users', { meetingId, users: updatedParticipants });
                     
                     // Also update MongoDB
@@ -292,7 +292,7 @@ io.on("connection", (socket) => {
                         const meetingId = key.split(':')[1];
                         const updatedParticipants = await getParticipants(meetingId);
                         console.log(`Redis cleanup for socket ${socket.id} from meeting ${meetingId}`);
-                        io.to(meetingId).emit('user-left', { userId, socketId: socket.id });
+                        io.to(meetingId).emit('user-left', { userId, socketId: socket.id, name: userName });
                         io.to(meetingId).emit('room-users', { meetingId, users: updatedParticipants });
                         
                         // Also update MongoDB
