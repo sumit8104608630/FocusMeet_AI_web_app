@@ -7,6 +7,11 @@ import { BrowserRouter, createBrowserRouter, RouterProvider } from 'react-router
 import About from './pages/About.jsx';
 import Layout from './pages/Layout.jsx';
 import Dashboard from './pages/Dashboard.jsx';
+import Meeting from './pages/Meeting.jsx';
+
+import { AuthProvider } from './context/AuthContext.jsx';
+import { SocketProvider } from './context/SocketContext.jsx';
+import { PeerProvider } from './context/PeerContext.jsx';
 
 const router=createBrowserRouter([{
     
@@ -23,6 +28,10 @@ const router=createBrowserRouter([{
           element:<Dashboard/>
         },
         {
+          path:'/meeting/:meetingId',
+          element:<Meeting/>
+        },
+        {
           path:'/about',
           element:<About/>
         }
@@ -32,8 +41,12 @@ const router=createBrowserRouter([{
 }]);
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <RouterProvider router={router}>
-      <Layout></Layout>
-    </RouterProvider>
+    <AuthProvider>
+      <SocketProvider>
+        <PeerProvider>
+          <RouterProvider router={router} />
+        </PeerProvider>
+      </SocketProvider>
+    </AuthProvider>
   </StrictMode>,
 )

@@ -1,12 +1,18 @@
 import { useState, useEffect, useRef } from "react";
+import axios from "axios";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../context/AuthContext";
+import axiosInstance from "../../utils/axiosconfig";
 import {
-  Video, Menu, X, ArrowRight, Play, Check,
+  Video, X, ArrowRight, Play, Check, Menu,
   Brain, BarChart3, Shield, Zap, Users, MessageSquare,
-  ChevronRight, Star, Eye, EyeOff, Mail, Lock
+  ChevronRight, Star, Eye, EyeOff, Mail, Lock, Loader2
 } from "lucide-react";
 
+/* ─── Axios Instance (Removed local instance, using global one) ─── */
+
 const styles = `
-  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Nunito:ital,wght@0,200..1000;1,200..1000&display=swap');
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -23,8 +29,8 @@ const styles = `
     --danger: #ef4444;
     --text: #e8eaf2;
     --muted: #6b7280;
-    --heading: 'Syne', sans-serif;
-    --body: 'DM Sans', sans-serif;
+    --heading: 'Figtree', sans-serif;
+    --body: 'Nunito', sans-serif;
   }
 
   html { scroll-behavior: smooth; }
@@ -61,11 +67,12 @@ const styles = `
     font-weight: 700;
     font-size: 14px;
     cursor: pointer;
-    transition: transform 0.2s, box-shadow 0.2s;
+    transition: transform 0.2s, box-shadow 0.2s, opacity 0.2s;
     box-shadow: 0 0 30px var(--primary-glow);
     display: inline-flex; align-items: center; gap: 8px;
   }
-  .glow-btn:hover { transform: translateY(-2px); box-shadow: 0 0 50px var(--primary-glow); }
+  .glow-btn:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 0 50px var(--primary-glow); }
+  .glow-btn:disabled { opacity: 0.6; cursor: not-allowed; }
 
   .outline-btn {
     background: transparent;
@@ -108,6 +115,8 @@ const styles = `
   @keyframes fadeUp { from{opacity:0;transform:translateY(30px)} to{opacity:1;transform:translateY(0)} }
   @keyframes modalIn { from{opacity:0;transform:scale(0.94) translateY(16px)} to{opacity:1;transform:scale(1) translateY(0)} }
   @keyframes overlayIn { from{opacity:0} to{opacity:1} }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes checkDraw { from { stroke-dashoffset: 30; } to { stroke-dashoffset: 0; } }
 
   .fade-up { animation: fadeUp 0.7s ease both; }
   .float   { animation: float 4s ease-in-out infinite; }
@@ -127,7 +136,7 @@ const styles = `
     background: #0d1021;
     border: 1px solid rgba(79,110,247,0.25);
     border-radius: 24px;
-    padding: 36px 32px;
+    padding: clamp(24px, 5vw, 36px) clamp(20px, 5vw, 32px);
     position: relative;
     animation: modalIn 0.28s cubic-bezier(0.34,1.56,0.64,1) both;
     box-shadow: 0 40px 100px rgba(0,0,0,0.6), 0 0 0 1px rgba(79,110,247,0.1);
@@ -144,9 +153,7 @@ const styles = `
   }
   .modal-close:hover { background: rgba(255,255,255,0.12); color: var(--text); }
 
-  .input-group {
-    position: relative; margin-bottom: 16px;
-  }
+  .input-group { position: relative; margin-bottom: 16px; }
   .input-icon {
     position: absolute; left: 14px; top: 50%; transform: translateY(-50%);
     color: var(--muted); pointer-events: none;
@@ -164,11 +171,10 @@ const styles = `
     outline: none;
     transition: border-color 0.2s, background 0.2s;
   }
-  .form-input:focus {
-    border-color: rgba(79,110,247,0.5);
-    background: rgba(79,110,247,0.05);
-  }
+  .form-input:focus { border-color: rgba(79,110,247,0.5); background: rgba(79,110,247,0.05); }
   .form-input::placeholder { color: var(--muted); }
+  .form-input:disabled { opacity: 0.5; cursor: not-allowed; }
+  .form-input.input-error { border-color: rgba(239,68,68,0.5) !important; }
 
   .eye-btn {
     position: absolute; right: 14px; top: 50%; transform: translateY(-50%);
@@ -178,9 +184,7 @@ const styles = `
   }
   .eye-btn:hover { color: var(--text); }
 
-  .divider {
-    display: flex; align-items: center; gap: 12px; margin: 20px 0;
-  }
+  .divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; }
   .divider-line { flex: 1; height: 1px; background: var(--border); }
   .divider-text { font-size: 12px; color: var(--muted); font-family: var(--heading); }
 
@@ -201,14 +205,27 @@ const styles = `
   }
   .social-btn:hover { background: rgba(255,255,255,0.08); border-color: rgba(255,255,255,0.15); }
 
+  /* Alert banners */
+  .alert {
+    display: flex; align-items: flex-start; gap: 10px;
+    padding: 12px 14px; border-radius: 10px;
+    font-size: 13px; font-family: var(--body); line-height: 1.5;
+    margin-bottom: 16px;
+  }
+  .alert-error   { background: rgba(239,68,68,0.1);  border: 1px solid rgba(239,68,68,0.25);  color: #fca5a5; }
+  .alert-success { background: rgba(34,211,160,0.1); border: 1px solid rgba(34,211,160,0.25); color: var(--success); }
+
+  /* Spinner for loading state */
+  .spin { animation: spin 0.7s linear infinite; }
+
   .score-badge {
     position: absolute; top: 8px; right: 8px;
     font-size: 10px; font-family: var(--heading); font-weight: 700;
     padding: 2px 7px; border-radius: 20px;
   }
-  .score-high   { background: rgba(34,211,160,0.15); color: var(--success); }
-  .score-mid    { background: rgba(245,158,11,0.15);  color: var(--warning); }
-  .score-low    { background: rgba(239,68,68,0.15);   color: var(--danger);  }
+  .score-high { background: rgba(34,211,160,0.15); color: var(--success); }
+  .score-mid  { background: rgba(245,158,11,0.15);  color: var(--warning); }
+  .score-low  { background: rgba(239,68,68,0.15);   color: var(--danger);  }
 
   .nav-link {
     font-family: var(--heading); font-size: 14px; font-weight: 600;
@@ -223,7 +240,7 @@ const styles = `
     transition: transform 0.25s, box-shadow 0.25s;
   }
   .plan-card:hover { transform: translateY(-4px); }
-  .plan-default { background: var(--surface); border: 1px solid var(--border); }
+  .plan-default   { background: var(--surface); border: 1px solid var(--border); }
   .plan-highlight {
     background: linear-gradient(145deg, rgba(79,110,247,0.08), rgba(124,58,237,0.06));
     border: 2px solid rgba(79,110,247,0.4);
@@ -246,17 +263,17 @@ const styles = `
 
   @media(max-width:768px){
     .hide-mob { display: none !important; }
-    .mob-col { flex-direction: column !important; }
+    .mob-col  { flex-direction: column !important; }
   }
 `;
 
 const features = [
-  { icon: Brain,        title: "AI Attentiveness",    desc: "Real-time engagement scoring powered by multimodal AI — know who's tuned in and who's zoning out." },
-  { icon: BarChart3,    title: "Smart Analytics",     desc: "Deep meeting metrics, talk-time ratios, sentiment trends, and weekly digests delivered automatically." },
-  { icon: Shield,       title: "Enterprise Security", desc: "End-to-end encryption, SOC 2 compliant, with granular admin controls and audit logs." },
-  { icon: Zap,          title: "Instant Summaries",   desc: "Auto-generated action items, decisions, and follow-ups so nothing slips through the cracks." },
-  { icon: Users,        title: "Team Insights",       desc: "Understand your team's collaboration patterns and improve meeting culture over time." },
-  { icon: MessageSquare, title: "Live Transcription", desc: "Accurate speaker-diarized transcripts in 30+ languages, searchable forever." },
+  { icon: Brain,         title: "AI Attentiveness",    desc: "Real-time engagement scoring powered by multimodal AI — know who's tuned in and who's zoning out." },
+  { icon: BarChart3,     title: "Smart Analytics",     desc: "Deep meeting metrics, talk-time ratios, sentiment trends, and weekly digests delivered automatically." },
+  { icon: Shield,        title: "Enterprise Security", desc: "End-to-end encryption, SOC 2 compliant, with granular admin controls and audit logs." },
+  { icon: Zap,           title: "Instant Summaries",   desc: "Auto-generated action items, decisions, and follow-ups so nothing slips through the cracks." },
+  { icon: Users,         title: "Team Insights",       desc: "Understand your team's collaboration patterns and improve meeting culture over time." },
+  { icon: MessageSquare, title: "Live Transcription",  desc: "Accurate speaker-diarized transcripts in 30+ languages, searchable forever." },
 ];
 
 const plans = [
@@ -289,7 +306,10 @@ function useFadeUp(threshold = 0.15) {
   const ref = useRef(null);
   const [visible, setVisible] = useState(false);
   useEffect(() => {
-    const obs = new IntersectionObserver(([e]) => { if (e.isIntersecting) setVisible(true); }, { threshold });
+    const obs = new IntersectionObserver(
+      ([e]) => { if (e.isIntersecting) setVisible(true); },
+      { threshold }
+    );
     if (ref.current) obs.observe(ref.current);
     return () => obs.disconnect();
   }, []);
@@ -312,17 +332,130 @@ function FadeSection({ children, delay = 0, style = {} }) {
 
 /* ─── Login Modal ─── */
 function LoginModal({ onClose }) {
+  const { login } = useAuth();
+  const navigate = useNavigate();
   const [showPassword, setShowPassword] = useState(false);
-  const [tab, setTab] = useState("login"); // "login" | "signup"
-  const [email, setEmail] = useState("");
+  const [tab, setTab]           = useState("login");
+  const [name, setName]         = useState("");
+  const [email, setEmail]       = useState("");
   const [password, setPassword] = useState("");
-  const [name, setName] = useState("");
 
+  // "idle" | "loading" | "success"
+  const [status, setStatus] = useState("idle");
+  const [error, setError]   = useState("");
+
+  // Close on Escape
   useEffect(() => {
     const handler = (e) => { if (e.key === "Escape") onClose(); };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, [onClose]);
+
+  // Clear state when switching tabs
+  const switchTab = (t) => {
+    setTab(t);
+    setError("");
+    setStatus("idle");
+    setName("");
+    setEmail("");
+    setPassword("");
+  };
+
+  /* ── Register handler ── */
+  const handleSignup = async () => {
+    setError("");
+
+    if (!name.trim() || !email.trim() || !password.trim()) {
+      setError("Please fill in all fields.");
+      return;
+    }
+
+    setStatus("loading");
+    try {
+      await axiosInstance.post("/user/create_user", {
+        name:     name.trim(),
+        email:    email.trim().toLowerCase(),
+        password: password.trim(),
+      });
+
+      // Show success state on button
+      setStatus("success");
+
+      // After 2s → clear form and switch to login tab
+      setTimeout(() => {
+        setName("");
+        setEmail("");
+        setPassword("");
+        setStatus("idle");
+        setError("");
+        setTab("login");
+      }, 2000);
+
+    } catch (err) {
+      const msg =
+        err.response?.data?.message ||
+        err.response?.data?.error   ||
+        err.message                  ||
+        "Something went wrong. Please try again.";
+      setError(msg);
+      setStatus("idle");
+    }
+  };
+
+  /* ── Login handler ── */
+  const handleLogin = async () => {
+    setError("");
+    if (!email.trim() || !password.trim()) {
+      setError("Please enter your email and password.");
+      return;
+    }
+
+    setStatus("loading");
+    const result = await login(email.trim().toLowerCase(), password.trim());
+
+    if (result.success) {
+      setStatus("success");
+      setTimeout(() => {
+        onClose();
+        navigate("/dashboard");
+      }, 1000);
+    } else {
+      setError(result.message);
+      setStatus("idle");
+    }
+  };
+
+  const handleSubmit = () => {
+    if (status === "loading" || status === "success") return;
+    tab === "signup" ? handleSignup() : handleLogin();
+  };
+
+  /* ── Button label + style based on status ── */
+  const btnStyle = {
+    width: "100%", justifyContent: "center",
+    marginTop: tab === "login" ? 0 : 4, padding: "14px",
+    transition: "background 0.4s, box-shadow 0.4s",
+    ...(status === "success" && {
+      background: "linear-gradient(135deg, #22d3a0, #059669)",
+      boxShadow: "0 0 30px rgba(34,211,160,0.4)",
+    }),
+  };
+
+  const btnContent = () => {
+    if (status === "loading") return (
+      <><Loader2 size={15} style={{ animation: "spin .65s linear infinite" }} />
+        {tab === "login" ? "Signing in…" : "Creating account…"}
+      </>
+    );
+    if (status === "success") return (
+      <><Check size={15} style={{ strokeDasharray: 30, animation: "checkDraw .4s ease forwards" }} />
+        Account created!
+      </>
+    );
+    return (
+      <>{tab === "login" ? "Sign In" : "Create Account"}<ArrowRight size={15} /></>
+    );
+  };
 
   return (
     <div className="modal-overlay" onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
@@ -354,15 +487,15 @@ function LoginModal({ onClose }) {
           {["login", "signup"].map(t => (
             <button
               key={t}
-              onClick={() => setTab(t)}
+              onClick={() => switchTab(t)}
               style={{
                 flex: 1, padding: "9px 0",
                 borderRadius: 9, border: "none", cursor: "pointer",
                 fontFamily: "var(--heading)", fontWeight: 700, fontSize: 13,
                 transition: "background 0.2s, color 0.2s, box-shadow 0.2s",
                 background: tab === t ? "rgba(79,110,247,0.18)" : "transparent",
-                color: tab === t ? "var(--primary)" : "var(--muted)",
-                boxShadow: tab === t ? "0 0 0 1px rgba(79,110,247,0.3)" : "none",
+                color:      tab === t ? "var(--primary)"         : "var(--muted)",
+                boxShadow:  tab === t ? "0 0 0 1px rgba(79,110,247,0.3)" : "none",
               }}
             >
               {t === "login" ? "Log In" : "Sign Up"}
@@ -371,10 +504,7 @@ function LoginModal({ onClose }) {
         </div>
 
         {/* Heading */}
-        <h2 style={{
-          fontFamily: "var(--heading)", fontWeight: 800, fontSize: 22,
-          color: "var(--text)", marginBottom: 6,
-        }}>
+        <h2 style={{ fontFamily: "var(--heading)", fontWeight: 800, fontSize: 22, color: "var(--text)", marginBottom: 6 }}>
           {tab === "login" ? "Welcome back" : "Create your account"}
         </h2>
         <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 24, lineHeight: 1.6 }}>
@@ -383,7 +513,23 @@ function LoginModal({ onClose }) {
             : "Start your 14-day free trial. No credit card required."}
         </p>
 
-        {/* Social */}
+        {/* Error banner */}
+        {error && (
+          <div className="alert alert-error">
+            <span style={{ flexShrink: 0 }}>⚠️</span>
+            <span>{error}</span>
+          </div>
+        )}
+
+        {/* Success banner (shows while redirecting) */}
+        {status === "success" && (
+          <div className="alert alert-success">
+            <span style={{ flexShrink: 0 }}>✅</span>
+            <span>Account created! Redirecting to login…</span>
+          </div>
+        )}
+
+        {/* Google */}
         <button className="social-btn">
           <svg width="16" height="16" viewBox="0 0 24 24">
             <path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/>
@@ -400,7 +546,7 @@ function LoginModal({ onClose }) {
           <div className="divider-line" />
         </div>
 
-        {/* Form */}
+        {/* Form fields */}
         {tab === "signup" && (
           <div className="input-group">
             <span className="input-icon"><Users size={15} /></span>
@@ -410,6 +556,7 @@ function LoginModal({ onClose }) {
               placeholder="Full name"
               value={name}
               onChange={e => setName(e.target.value)}
+              disabled={status !== "idle"}
             />
           </div>
         )}
@@ -422,6 +569,7 @@ function LoginModal({ onClose }) {
             placeholder="Email address"
             value={email}
             onChange={e => setEmail(e.target.value)}
+            disabled={status !== "idle"}
           />
         </div>
 
@@ -433,9 +581,11 @@ function LoginModal({ onClose }) {
             placeholder="Password"
             value={password}
             onChange={e => setPassword(e.target.value)}
+            onKeyDown={e => e.key === "Enter" && handleSubmit()}
             style={{ paddingRight: 42 }}
+            disabled={status !== "idle"}
           />
-          <button className="eye-btn" onClick={() => setShowPassword(!showPassword)} type="button">
+          <button className="eye-btn" onClick={() => setShowPassword(p => !p)} type="button">
             {showPassword ? <EyeOff size={15} /> : <Eye size={15} />}
           </button>
         </div>
@@ -448,17 +598,20 @@ function LoginModal({ onClose }) {
           </div>
         )}
 
+        {/* Submit button */}
         <button
           className="glow-btn"
-          style={{ width: "100%", justifyContent: "center", marginTop: tab === "login" ? 0 : 4, padding: "14px" }}
+          onClick={handleSubmit}
+          disabled={status !== "idle"}
+          style={btnStyle}
         >
-          {tab === "login" ? "Sign In" : "Create Account"} <ArrowRight size={15} />
+          {btnContent()}
         </button>
 
         <p style={{ textAlign: "center", marginTop: 20, fontSize: 12, color: "var(--muted)", fontFamily: "var(--heading)" }}>
           {tab === "login" ? "Don't have an account? " : "Already have an account? "}
           <span
-            onClick={() => setTab(tab === "login" ? "signup" : "login")}
+            onClick={() => switchTab(tab === "login" ? "signup" : "login")}
             style={{ color: "var(--primary)", cursor: "pointer", fontWeight: 700 }}
           >
             {tab === "login" ? "Sign up free" : "Log in"}
@@ -472,6 +625,8 @@ function LoginModal({ onClose }) {
 /* ─── Header ─── */
 function Header({ onLoginClick }) {
   const [scrolled, setScrolled] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
   useEffect(() => {
     const h = () => setScrolled(window.scrollY > 10);
     window.addEventListener("scroll", h);
@@ -481,9 +636,9 @@ function Header({ onLoginClick }) {
   return (
     <header style={{
       position: "fixed", top: 0, left: 0, right: 0, zIndex: 100,
-      background: scrolled ? "rgba(6,7,13,0.92)" : "transparent",
-      backdropFilter: scrolled ? "blur(18px)" : "none",
-      borderBottom: scrolled ? "1px solid rgba(255,255,255,0.06)" : "none",
+      background: scrolled || mobileMenuOpen ? "rgba(6,7,13,0.92)" : "transparent",
+      backdropFilter: scrolled || mobileMenuOpen ? "blur(18px)" : "none",
+      borderBottom: (scrolled || mobileMenuOpen) ? "1px solid rgba(255,255,255,0.06)" : "none",
       transition: "all 0.3s",
     }}>
       <div style={{ maxWidth: "100%", margin: "0 auto", padding: "0 24px" }}>
@@ -514,8 +669,7 @@ function Header({ onLoginClick }) {
               style={{
                 fontFamily: "var(--heading)", fontWeight: 600, fontSize: 14,
                 color: "var(--text)", background: "none", border: "none",
-                cursor: "pointer", padding: "8px 16px",
-                borderRadius: 10,
+                cursor: "pointer", padding: "8px 16px", borderRadius: 10,
                 transition: "background 0.2s",
               }}
               onMouseEnter={e => e.currentTarget.style.background = "rgba(255,255,255,0.05)"}
@@ -527,8 +681,67 @@ function Header({ onLoginClick }) {
               Get Started <ChevronRight size={14} />
             </button>
           </div>
+
+          {/* Mobile Menu Toggle */}
+          <button 
+            className="show-mob"
+            onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+            style={{
+              background: "none", border: "none", color: "var(--text)",
+              cursor: "pointer", padding: 8, display: "none" // Managed by CSS media query
+            }}
+          >
+            {mobileMenuOpen ? <X size={24} /> : <Menu size={24} />}
+          </button>
         </div>
+
+        {/* Mobile Menu Content */}
+        {mobileMenuOpen && (
+          <div style={{
+            padding: "20px 0 40px",
+            display: "flex", flexDirection: "column", gap: 12,
+            borderTop: "1px solid rgba(255,255,255,0.06)",
+            animation: "fadeUp 0.3s ease both"
+          }}>
+            {["Features", "Pricing", "About"].map(l => (
+              <a 
+                key={l} 
+                href={`#${l.toLowerCase()}`} 
+                className="nav-link"
+                onClick={() => setMobileMenuOpen(false)}
+                style={{ fontSize: 16, padding: "12px 16px" }}
+              >
+                {l}
+              </a>
+            ))}
+            <div style={{ height: 1, background: "rgba(255,255,255,0.06)", margin: "8px 0" }} />
+            <button
+              onClick={() => { onLoginClick(); setMobileMenuOpen(false); }}
+              style={{
+                fontFamily: "var(--heading)", fontWeight: 600, fontSize: 16,
+                color: "var(--text)", background: "rgba(255,255,255,0.05)", border: "none",
+                cursor: "pointer", padding: "14px 16px", borderRadius: 12,
+                textAlign: "left"
+              }}
+            >
+              Log in
+            </button>
+            <button 
+              className="glow-btn" 
+              onClick={() => { onLoginClick(); setMobileMenuOpen(false); }}
+              style={{ padding: "14px", fontSize: 15, justifyContent: "center" }}
+            >
+              Get Started <ChevronRight size={14} />
+            </button>
+          </div>
+        )}
       </div>
+      <style>{`
+        @media(max-width:768px){
+          .hide-mob { display: none !important; }
+          .show-mob { display: block !important; }
+        }
+      `}</style>
     </header>
   );
 }
@@ -536,27 +749,28 @@ function Header({ onLoginClick }) {
 /* ─── Hero ─── */
 function HeroSection({ onLoginClick }) {
   return (
-    <section style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", paddingTop: 80 }}>
+    <section style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", paddingTop: 80, paddingBottom: 60 }}>
       <div className="orb" style={{ width: 500, height: 500, background: "rgba(79,110,247,0.12)", top: "10%", left: "-10%" }} />
       <div className="orb" style={{ width: 400, height: 400, background: "rgba(124,58,237,0.1)", bottom: "5%", right: "-8%" }} />
 
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "0 24px", textAlign: "center", position: "relative", zIndex: 2 }}>
-        <div className="fade-up" style={{ animationDelay: "0s" }}>
+        <div className="fade-up">
           <div style={{
             display: "inline-flex", alignItems: "center", gap: 8,
             background: "rgba(13,16,33,0.7)", border: "1px solid rgba(79,110,247,0.25)",
             backdropFilter: "blur(12px)", borderRadius: 50,
             padding: "8px 18px", marginBottom: 32,
+            maxWidth: "100%"
           }}>
-            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--success)" }} className="pulse-glow" />
-            <span style={{ fontFamily: "var(--heading)", fontSize: 12, color: "var(--muted)", fontWeight: 600 }}>
+            <span style={{ width: 7, height: 7, borderRadius: "50%", background: "var(--success)", display: "inline-block" }} className="pulse-glow" />
+            <span style={{ fontFamily: "var(--heading)", fontSize: "clamp(10px, 3vw, 12px)", color: "var(--muted)", fontWeight: 600 }}>
               AI-Powered Meeting Intelligence
             </span>
           </div>
 
           <h1 style={{
             fontFamily: "var(--heading)", fontWeight: 800,
-            fontSize: "clamp(2.5rem, 6vw, 4.5rem)", lineHeight: 1.1,
+            fontSize: "clamp(2.2rem, 8vw, 4.5rem)", lineHeight: 1.1,
             letterSpacing: "-0.02em", marginBottom: 24, maxWidth: 820, margin: "0 auto 24px",
           }}>
             Meetings that{" "}
@@ -564,29 +778,34 @@ function HeroSection({ onLoginClick }) {
             your team
           </h1>
 
-          <p style={{ color: "var(--muted)", fontSize: "clamp(1rem, 2vw, 1.2rem)", maxWidth: 560, margin: "0 auto 40px", lineHeight: 1.75 }}>
+          <p style={{ color: "var(--muted)", fontSize: "clamp(0.95rem, 4vw, 1.2rem)", maxWidth: 560, margin: "0 auto 40px", lineHeight: 1.75 }}>
             Real-time AI attentiveness monitoring, smart analytics, and seamless collaboration — all in one premium platform.
           </p>
 
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 14, flexWrap: "wrap" }}>
-            <button className="glow-btn" onClick={onLoginClick}>
+            <button className="glow-btn" onClick={onLoginClick} style={{ width: "min(100%, 280px)" }}>
               Start a Meeting <ArrowRight size={15} />
             </button>
-            <button className="outline-btn">
+            <button className="outline-btn" style={{ width: "min(100%, 280px)", justifyContent: "center" }}>
               <Play size={14} color="var(--primary)" /> Watch Demo
             </button>
           </div>
         </div>
 
-        <div className="float" style={{ marginTop: 72, animationDelay: "0.3s" }}>
+        <div className="float" style={{ marginTop: 72 }}>
           <div className="glass" style={{ padding: 8, maxWidth: 860, margin: "0 auto" }}>
             <div style={{
               background: "rgba(255,255,255,0.03)", borderRadius: 12,
               aspectRatio: "16/9", position: "relative", overflow: "hidden",
               display: "flex", flexDirection: "column",
             }}>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 8, padding: 12, flex: 1 }}>
-                {participants.map((p, i) => (
+              <div style={{ 
+                display: "grid", 
+                gridTemplateColumns: "repeat(auto-fit, minmax(clamp(80px, 20vw, 240px), 1fr))", 
+                gap: 8, padding: 12, flex: 1,
+                overflow: "hidden"
+              }}>
+                {participants.slice(0, window.innerWidth < 768 ? 4 : 6).map((p, i) => (
                   <div key={i} style={{
                     background: "rgba(255,255,255,0.04)", borderRadius: 10,
                     display: "flex", flexDirection: "column", alignItems: "center",
@@ -606,6 +825,7 @@ function HeroSection({ onLoginClick }) {
                 display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
                 padding: "10px 16px",
                 background: "rgba(13,16,33,0.8)", borderTop: "1px solid var(--border)",
+                overflowX: "auto"
               }}>
                 {["Mic", "Cam", "Share", "Chat", "AI"].map(l => (
                   <div key={l} className="ctrl-btn">{l[0]}</div>
@@ -623,28 +843,32 @@ function HeroSection({ onLoginClick }) {
 /* ─── Features ─── */
 function FeaturesSection() {
   return (
-    <section id="features" style={{ padding: "120px 0" }}>
+    <section id="features" style={{ padding: "clamp(60px, 10vw, 120px) 0" }}>
       <div className="orb" style={{ width: 400, height: 400, background: "rgba(79,110,247,0.08)", top: "20%", right: "-10%" }} />
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "0 24px" }}>
         <FadeSection style={{ textAlign: "center", marginBottom: 64 }}>
           <span className="tag">Features</span>
           <h2 style={{
             fontFamily: "var(--heading)", fontWeight: 800,
-            fontSize: "clamp(1.8rem, 4vw, 3rem)", marginTop: 12, marginBottom: 16,
+            fontSize: "clamp(1.8rem, 5vw, 3rem)", marginTop: 12, marginBottom: 16,
             letterSpacing: "-0.02em",
           }}>
             Everything you need for{" "}
             <span className="gradient-text">smarter meetings</span>
           </h2>
-          <p style={{ color: "var(--muted)", maxWidth: 480, margin: "0 auto", lineHeight: 1.75 }}>
+          <p style={{ color: "var(--muted)", maxWidth: 480, margin: "0 auto", lineHeight: 1.75, fontSize: "clamp(0.9rem, 3vw, 1rem)" }}>
             Powerful AI-driven tools designed to boost engagement and productivity across your entire organization.
           </p>
         </FadeSection>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: 20 }}>
+        <div style={{ 
+          display: "grid", 
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", 
+          gap: 20 
+        }}>
           {features.map((f, i) => (
             <FadeSection key={f.title} delay={i * 0.08}>
-              <div className="glass-hover" style={{ padding: 28, height: "100%" }}>
+              <div className="glass-hover" style={{ padding: "clamp(20px, 5vw, 28px)", height: "100%" }}>
                 <div style={{
                   width: 48, height: 48, borderRadius: 14,
                   background: "rgba(79,110,247,0.12)", border: "1px solid rgba(79,110,247,0.2)",
@@ -669,27 +893,31 @@ function FeaturesSection() {
 /* ─── Pricing ─── */
 function PricingSection({ onLoginClick }) {
   return (
-    <section id="pricing" style={{ padding: "120px 0" }}>
+    <section id="pricing" style={{ padding: "clamp(60px, 10vw, 120px) 0" }}>
       <div className="orb" style={{ width: 500, height: 500, background: "rgba(124,58,237,0.08)", bottom: "0%", left: "-10%" }} />
       <div style={{ maxWidth: 1100, margin: "0 auto", padding: "0 24px" }}>
         <FadeSection style={{ textAlign: "center", marginBottom: 64 }}>
           <span className="tag">Pricing</span>
           <h2 style={{
             fontFamily: "var(--heading)", fontWeight: 800,
-            fontSize: "clamp(1.8rem, 4vw, 3rem)", marginTop: 12, marginBottom: 16,
+            fontSize: "clamp(1.8rem, 5vw, 3rem)", marginTop: 12, marginBottom: 16,
             letterSpacing: "-0.02em",
           }}>
             Simple, transparent pricing
           </h2>
-          <p style={{ color: "var(--muted)", maxWidth: 480, margin: "0 auto", lineHeight: 1.75 }}>
+          <p style={{ color: "var(--muted)", maxWidth: 480, margin: "0 auto", lineHeight: 1.75, fontSize: "clamp(0.9rem, 3vw, 1rem)" }}>
             Choose the plan that fits your team. Upgrade anytime — no hidden fees.
           </p>
         </FadeSection>
 
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 20, maxWidth: 980, margin: "0 auto" }}>
+        <div style={{ 
+          display: "grid", 
+          gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", 
+          gap: 20, maxWidth: 980, margin: "0 auto" 
+        }}>
           {plans.map((plan, i) => (
             <FadeSection key={plan.name} delay={i * 0.1}>
-              <div className={`plan-card ${plan.highlighted ? "plan-highlight" : "plan-default"}`} style={{ height: "100%" }}>
+              <div className={`plan-card ${plan.highlighted ? "plan-highlight" : "plan-default"}`} style={{ height: "100%", padding: "clamp(20px, 5vw, 28px)" }}>
                 {plan.highlighted && (
                   <span style={{
                     display: "inline-flex", alignItems: "center", gap: 4,
@@ -704,12 +932,10 @@ function PricingSection({ onLoginClick }) {
                   {plan.name}
                 </h3>
                 <div style={{ margin: "12px 0 6px" }}>
-                  <span style={{ fontFamily: "var(--heading)", fontWeight: 800, fontSize: 42, color: "var(--text)" }}>
+                  <span style={{ fontFamily: "var(--heading)", fontWeight: 800, fontSize: "clamp(32px, 8vw, 42px)", color: "var(--text)" }}>
                     {plan.price}
                   </span>
-                  {plan.period && (
-                    <span style={{ color: "var(--muted)", fontSize: 14 }}>{plan.period}</span>
-                  )}
+                  {plan.period && <span style={{ color: "var(--muted)", fontSize: 14 }}>{plan.period}</span>}
                 </div>
                 <p style={{ color: "var(--muted)", fontSize: 13, marginBottom: 24, lineHeight: 1.6 }}>{plan.desc}</p>
 
@@ -757,8 +983,7 @@ function Footer() {
   return (
     <footer style={{
       borderTop: "1px solid var(--border)", padding: "32px 24px",
-      textAlign: "center", color: "var(--muted)", fontFamily: "var(--heading)",
-      fontSize: 13,
+      textAlign: "center", color: "var(--muted)", fontFamily: "var(--heading)", fontSize: 13,
     }}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, marginBottom: 12 }}>
         <div style={{
@@ -777,12 +1002,49 @@ function Footer() {
 
 /* ─── App ─── */
 export default function AttendAIDashboard() {
+  const { user, loading, activeMeeting } = useAuth();
+  const navigate = useNavigate();
   const [showLogin, setShowLogin] = useState(false);
+  const [windowWidth, setWindowWidth] = useState(window.innerWidth);
+
+  useEffect(() => {
+    const handleResize = () => setWindowWidth(window.innerWidth);
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  const isMobile = windowWidth < 768;
+
+  useEffect(() => {
+    if (!loading && user) {
+      const redirectPath = sessionStorage.getItem('redirectAfterLogin');
+      if (redirectPath) {
+        sessionStorage.removeItem('redirectAfterLogin');
+        navigate(redirectPath);
+      } else if (activeMeeting) {
+        // Auto-rejoin active meeting from Redis
+        navigate(`/meeting/${activeMeeting}`);
+      } else {
+        navigate("/dashboard");
+      }
+    }
+  }, [user, loading, navigate, activeMeeting]);
 
   useEffect(() => {
     document.body.style.overflow = showLogin ? "hidden" : "";
     return () => { document.body.style.overflow = ""; };
   }, [showLogin]);
+
+  if (loading) {
+    return (
+      <div style={{ 
+        height: "100vh", background: "var(--bg)", display: "flex", 
+        alignItems: "center", justifyContent: "center" 
+      }}>
+        <Loader2 size={32} className="spin" color="var(--primary)" />
+      </div>
+    );
+  }
 
   return (
     <>

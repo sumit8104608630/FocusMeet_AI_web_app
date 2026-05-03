@@ -2,7 +2,7 @@ import React from 'react';
 import { Outlet } from 'react-router-dom';
 
 const globalStyles = `
-  @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,300..900;1,300..900&family=Nunito:ital,wght@0,200..1000;1,200..1000&display=swap');
 
   *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -19,8 +19,8 @@ const globalStyles = `
     --danger: #ef4444;
     --text: #e8eaf2;
     --muted: #6b7280;
-    --heading: 'Syne', sans-serif;
-    --body: 'DM Sans', sans-serif;
+    --heading: 'Figtree', sans-serif;
+    --body: 'Nunito', sans-serif;
   }
 
   html { scroll-behavior: smooth; }
