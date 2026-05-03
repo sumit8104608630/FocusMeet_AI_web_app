@@ -6,8 +6,8 @@ import { apiError } from '../utils/apiError.js';
 
 const cookieOptions = {
     httpOnly: true,
-    secure: process.env.NODE_ENV === 'production',
-    sameSite: process.env.NODE_ENV === 'production' ? 'None' : 'Lax',
+    secure: true,
+    sameSite: 'none',
 };
 
 const authenticate = asyncHandler(async (req, res, next) => { // ✅ correct signature
