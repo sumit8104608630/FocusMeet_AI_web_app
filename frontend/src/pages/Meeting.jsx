@@ -21,6 +21,7 @@ const Meeting = () => {
     const [isScreenSharing, setIsScreenSharing] = useState(false);
     const [windowWidth, setWindowWidth] = useState(window.innerWidth);
     const [isLeaving, setIsLeaving] = useState(false);
+    const isLeavingRef = useRef(false);
     const screenStreamRef = useRef(null);
 
     const localVideoRef = useCallback((node) => {
@@ -36,6 +37,7 @@ const Meeting = () => {
     }, [remoteStream]);
 
     const initializingStream = useRef(false);
+    const hasJoined = useRef(false);
 
     // Responsive listener
     useEffect(() => {
@@ -54,8 +56,45 @@ const Meeting = () => {
         }
     }, [user, loading, navigate]);
 
+    const cleanupAndExit = useCallback(() => {
+        if (isLeavingRef.current) return;
+        isLeavingRef.current = true;
+        setIsLeaving(true);
+
+        console.log('Performing final cleanup and exit...');
+
+        // 1. Stop all socket listeners
+        if (socket) {
+            socket.off('user-joined');
+            socket.off('offer');
+            socket.off('answer');
+            socket.off('room-users');
+            socket.off('user-left');
+            socket.off('meeting-ended');
+            socket.off('call-ended');
+            socket.off('error');
+        }
+
+        // 2. Stop all media tracks
+        if (localStream) {
+            localStream.getTracks().forEach(track => {
+                track.stop();
+                console.log('Stopped track:', track.kind);
+            });
+        }
+        if (screenStreamRef.current) {
+            screenStreamRef.current.getTracks().forEach(track => track.stop());
+        }
+
+        // 3. Reset Peer
+        resetPeer();
+
+        // 4. Navigate
+        navigate('/dashboard', { replace: true });
+    }, [socket, localStream, resetPeer, navigate]);
+
     const startLocalStream = useCallback(async () => {
-        if (localStream) return localStream;
+        if (isLeavingRef.current || localStream) return localStream;
         if (initializingStream.current) return null;
         
         initializingStream.current = true;
@@ -65,114 +104,89 @@ const Meeting = () => {
                 video: true,
                 audio: true
             });
+            
+            if (isLeavingRef.current) {
+                stream.getTracks().forEach(track => track.stop());
+                return null;
+            }
+
             setLocalStream(stream);
             setStreamReady(true);
             return stream;
         } catch (error) {
             console.error('Error accessing media devices:', error);
-            setStreamReady(true); // Still set to true to allow joining without media if necessary
+            if (!isLeavingRef.current) setStreamReady(true); 
             return null;
         } finally {
             initializingStream.current = false;
         }
     }, [localStream]);
 
-    useEffect(() => {
-        if (localStream) {
-            // This is a secondary backup to ensure the video element gets the stream
-            const videoEl = document.querySelector('video[muted]');
-            if (videoEl && !videoEl.srcObject) {
-                videoEl.srcObject = localStream;
-            }
-        }
-    }, [localStream]);
-
     const handleUserJoined = useCallback(async ({ socketId: remoteSocketId }) => {
-        console.log('User joined:', remoteSocketId);
+        if (isLeavingRef.current) return;
         
         if (localStream && user) {
-            console.log('Sending offer to socket:', remoteSocketId);
             const offer = await createOffer(localStream, remoteSocketId, true);
             socket.emit('offer', { offer, to: remoteSocketId, from: user.id });
         }
     }, [localStream, createOffer, socket, user]);
 
     const handleOffer = useCallback(async ({ offer, fromSocket: remoteSocketId }) => {
-        console.log('Received offer from socket:', remoteSocketId);
+        if (isLeavingRef.current) return;
         const stream = localStream || await startLocalStream();
-        if (stream && user) {
-            console.log('Creating answer for socket:', remoteSocketId);
+        if (stream && user && !isLeavingRef.current) {
             const answer = await createAnswer(offer, stream, remoteSocketId, true);
             socket.emit('answer', { answer, to: remoteSocketId, from: user.id });
         }
     }, [localStream, startLocalStream, createAnswer, socket, user]);
 
     const handleAnswer = useCallback(async ({ answer }) => {
-        console.log('Received answer');
+        if (isLeavingRef.current) return;
         await setAnswer(answer);
     }, [setAnswer]);
 
     const handleRoomUsers = useCallback(({ users }) => {
-        if (!user || !socket) return;
-        
-        console.log('Raw room users received:', users);
-        
-        // Filter out the current SOCKET to allow same-user testing in multiple tabs
-        // But still group by userId for display if desired (optional)
+        if (!user || !socket || isLeavingRef.current) return;
         const others = users.filter(p => p.socketId !== socket.id);
-        
-        console.log('Filtered remote participants:', others);
         setParticipants(others);
     }, [user, socket]);
 
     // Step 1: Initialize local stream
     useEffect(() => {
-        if (user) {
+        if (user && !isLeavingRef.current && !localStream) {
             startLocalStream();
         }
-    }, [user, startLocalStream]);
+    }, [user, startLocalStream, localStream]);
 
-    // Step 2: Join meeting once stream is ready
+    // Step 2 & 3: Join meeting and set up listeners
     useEffect(() => {
-        if (!socket || !user || !streamReady) return;
+        if (!socket || !user || !streamReady || isLeavingRef.current || hasJoined.current) return;
 
-        console.log('Stream ready, joining meeting:', meetingId);
+        hasJoined.current = true;
+        console.log('Joining meeting:', meetingId);
         socket.emit('join-meeting', { 
             meetingId, 
             userId: user.id,
             name: user.name 
         });
-    }, [socket, user, meetingId, streamReady]);
-
-    // Step 3: Set up socket listeners
-    useEffect(() => {
-        if (!socket || !user) return;
 
         socket.on('user-joined', handleUserJoined);
         socket.on('offer', handleOffer);
         socket.on('answer', handleAnswer);
         socket.on('room-users', handleRoomUsers);
         socket.on('user-left', ({ socketId: leftSocketId }) => {
-            console.log('User left:', leftSocketId);
-            // We only reset peer if we were in a call with this specific socket
-            // In the current PeerContext, we only have ONE peerRef, so any departure resets it
-            resetPeer();
+            if (!isLeavingRef.current) resetPeer();
         });
         socket.on('error', ({ message }) => {
             console.error('Socket error:', message);
-            navigate('/dashboard');
+            cleanupAndExit();
         });
         socket.on('meeting-ended', () => {
-            if (isLeaving) return;
-            setIsLeaving(true);
-            resetPeer();
-            navigate('/dashboard', { replace: true });
+            console.log('Meeting ended by host');
+            cleanupAndExit();
         });
         socket.on('call-ended', () => {
-            if (isLeaving) return;
-            setIsLeaving(true);
-            resetPeer();
-            navigate('/dashboard', { replace: true });
+            cleanupAndExit();
         });
 
         return () => {
@@ -181,12 +195,11 @@ const Meeting = () => {
             socket.off('answer', handleAnswer);
             socket.off('room-users', handleRoomUsers);
             socket.off('user-left');
-            socket.off('ice-candidate');
             socket.off('meeting-ended');
             socket.off('call-ended');
             socket.off('error');
         };
-    }, [socket, user, handleUserJoined, handleOffer, handleAnswer, handleRoomUsers, resetPeer, navigate, isLeaving]);
+    }, [socket, user, meetingId, streamReady, handleUserJoined, handleOffer, handleAnswer, handleRoomUsers, cleanupAndExit]);
 
     // Cleanup local stream tracks on unmount
     useEffect(() => {
@@ -265,37 +278,14 @@ const Meeting = () => {
     };
 
     const endCall = useCallback(() => {
-        if (isLeaving) return;
-        setIsLeaving(true);
-        console.log('Ending call...');
-        
-        // Notify backend
+        console.log('End Call button clicked');
         if (socket) {
             socket.emit('call-ended', { 
                 meetingId: meetingId,
             });
         }
-        
-        // Stop all tracks in local stream
-        if (localStream) {
-            localStream.getTracks().forEach(track => {
-                track.stop();
-            });
-            setLocalStream(null);
-        }
-
-        // Stop screen share if active
-        if (screenStreamRef.current) {
-            screenStreamRef.current.getTracks().forEach(track => track.stop());
-            screenStreamRef.current = null;
-        }
-
-        // Reset peer connection
-        resetPeer();
-        
-        // Navigate back to dashboard
-        navigate('/dashboard', { replace: true });
-    }, [socket, meetingId, localStream, resetPeer, navigate, isLeaving]);
+        cleanupAndExit();
+    }, [socket, meetingId, cleanupAndExit]);
 
     const copyCode = () => {
         navigator.clipboard.writeText(meetingId);
