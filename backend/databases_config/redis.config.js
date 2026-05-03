@@ -1,6 +1,13 @@
 import { createClient } from 'redis';
 import dotenv from 'dotenv';
-dotenv.config();
+import path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load .env from the backend root directory
+dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const redisClient = createClient({
     url: process.env.REDIS_URL || 'rediss://red-cv5dli7noe9s73eh7eug:z2ACzxZkPSjjtkpheFhHoxn7zcTBmhDt@oregon-keyvalue.render.com:6379',

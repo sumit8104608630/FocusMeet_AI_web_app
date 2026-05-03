@@ -1,7 +1,14 @@
 import jwt from 'jsonwebtoken';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import client from '../databases_config/postgress.confiqure.js';
-dotenv.config();
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load .env from the backend root directory
+dotenv.config({ path: path.join(__dirname, '../.env') });
 
 const ACCESS_SECRET  = process.env.JWT_SECRET;
 const REFRESH_SECRET = process.env.REFRESH_TOKEN_SECRET; // ✅ separate secret

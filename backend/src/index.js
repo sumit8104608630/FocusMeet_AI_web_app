@@ -1,8 +1,14 @@
 import server from './app.js';
 import dotenv from 'dotenv';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import connectDB from '../databases_config/mongodb.config.js';
 
-dotenv.config();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Load .env from the backend root directory
+dotenv.config({ path: path.join(__dirname, '../.env') });
 
 // Connect to MongoDB
 connectDB();
