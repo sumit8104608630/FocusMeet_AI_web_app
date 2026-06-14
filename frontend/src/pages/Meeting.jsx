@@ -38,6 +38,7 @@ const Meeting = () => {
 
     const initializingStream = useRef(false);
     const hasJoined = useRef(false);
+    const localStreamRef = useRef(null);
 
     // Responsive listener
     useEffect(() => {
@@ -76,8 +77,8 @@ const Meeting = () => {
         }
 
         // 2. Stop all media tracks
-        if (localStream) {
-            localStream.getTracks().forEach(track => {
+        if (localStreamRef.current) {
+            localStreamRef.current.getTracks().forEach(track => {
                 track.stop();
                 console.log('Stopped track:', track.kind);
             });
@@ -91,11 +92,11 @@ const Meeting = () => {
 
         // 4. Navigate
         navigate('/dashboard', { replace: true });
-    }, [socket, localStream, resetPeer, navigate]);
+    }, [socket, resetPeer, navigate]);
 
     const startLocalStream = useCallback(async () => {
-        if (isLeavingRef.current || localStream) return localStream;
-        if (initializingStream.current) return null;
+        if (isLeavingRef.current) return null;
+        if (localStreamRef.current || initializingStream.current) return localStreamRef.current;
         
         initializingStream.current = true;
         try {
@@ -110,6 +111,7 @@ const Meeting = () => {
                 return null;
             }
 
+            localStreamRef.current = stream;
             setLocalStream(stream);
             setStreamReady(true);
             return stream;
@@ -120,25 +122,25 @@ const Meeting = () => {
         } finally {
             initializingStream.current = false;
         }
-    }, [localStream]);
+    }, []);
 
     const handleUserJoined = useCallback(async ({ socketId: remoteSocketId }) => {
         if (isLeavingRef.current) return;
         
-        if (localStream && user) {
-            const offer = await createOffer(localStream, remoteSocketId, true);
+        if (localStreamRef.current && user) {
+            const offer = await createOffer(localStreamRef.current, remoteSocketId, true);
             socket.emit('offer', { offer, to: remoteSocketId, from: user.id });
         }
-    }, [localStream, createOffer, socket, user]);
+    }, [createOffer, socket, user]);
 
     const handleOffer = useCallback(async ({ offer, fromSocket: remoteSocketId }) => {
         if (isLeavingRef.current) return;
-        const stream = localStream || await startLocalStream();
+        const stream = localStreamRef.current || await startLocalStream();
         if (stream && user && !isLeavingRef.current) {
             const answer = await createAnswer(offer, stream, remoteSocketId, true);
             socket.emit('answer', { answer, to: remoteSocketId, from: user.id });
         }
-    }, [localStream, startLocalStream, createAnswer, socket, user]);
+    }, [startLocalStream, createAnswer, socket, user]);
 
     const handleAnswer = useCallback(async ({ answer }) => {
         if (isLeavingRef.current) return;
@@ -153,14 +155,16 @@ const Meeting = () => {
 
     // Step 1: Initialize local stream
     useEffect(() => {
-        if (user && !isLeavingRef.current && !localStream) {
+        if (isLeavingRef.current) return;
+        if (user && !localStreamRef.current) {
             startLocalStream();
         }
-    }, [user, startLocalStream, localStream]);
+    }, [user, startLocalStream]);
 
     // Step 2 & 3: Join meeting and set up listeners
     useEffect(() => {
-        if (!socket || !user || !streamReady || isLeavingRef.current || hasJoined.current) return;
+        if (isLeavingRef.current) return;
+        if (!socket || !user || !streamReady || hasJoined.current) return;
 
         hasJoined.current = true;
         console.log('Joining meeting:', meetingId);
