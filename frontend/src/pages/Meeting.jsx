@@ -51,6 +51,11 @@ const Meeting = () => {
     const isTablet = windowWidth >= 768 && windowWidth < 1024;
 
     useEffect(() => {
+        // Reset flags when component mounts
+        hasJoined.current = false;
+        isLeavingRef.current = false;
+        localStreamRef.current = null;
+        
         if (!loading && !user) {
             sessionStorage.setItem('redirectAfterLogin', window.location.pathname);
             navigate('/');
@@ -64,7 +69,7 @@ const Meeting = () => {
 
         console.log('Performing final cleanup and exit...');
 
-        // 1. Stop all socket listeners
+        // 1. Stop socket listeners but don't disconnect globally!
         if (socket) {
             socket.off('user-joined');
             socket.off('offer');
@@ -76,21 +81,27 @@ const Meeting = () => {
             socket.off('error');
         }
 
-        // 2. Stop all media tracks
+        // 2. Stop all media tracks and release them
         if (localStreamRef.current) {
             localStreamRef.current.getTracks().forEach(track => {
                 track.stop();
                 console.log('Stopped track:', track.kind);
             });
+            localStreamRef.current = null; 
+            setLocalStream(null);
         }
         if (screenStreamRef.current) {
             screenStreamRef.current.getTracks().forEach(track => track.stop());
+            screenStreamRef.current = null;
         }
+
+        // Critical: Reset all state flags
+        setStreamReady(false);
 
         // 3. Reset Peer
         resetPeer();
 
-        // 4. Navigate
+        // 4. Navigate immediately
         navigate('/dashboard', { replace: true });
     }, [socket, resetPeer, navigate]);
 

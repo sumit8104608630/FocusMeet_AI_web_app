@@ -95,14 +95,16 @@ return res.status(401).json(new apiError('Invalid email or password', 401));
     const accessToken=set_user(user);
     const refreshToken=set_refresh_token(user);
     // 6. Set cookies
-    const cookieOptions = {
+    res.cookie('accessToken', accessToken, {
         httpOnly: true,
         secure: true,
         sameSite: 'none',
-    };
-
-    res.cookie('accessToken', accessToken, cookieOptions);
-    res.cookie('refreshToken', refreshToken, cookieOptions);
+    });
+    res.cookie('refreshToken', refreshToken, {
+        httpOnly: true,
+        secure: true,
+        sameSite: 'none',
+    });
     return res.status(200).json(new apiResponse(200, 'Login successful'));
 
 })
@@ -121,13 +123,8 @@ const get_user_info = asyncHandler(async (req, res, next) => {
 });
 
 const logoutUser = asyncHandler(async (req, res, next) => {
-    const cookieOptions = {
-        httpOnly: true,
-        secure: true,
-        sameSite: 'none',
-    };
-    res.clearCookie('accessToken', cookieOptions);
-    res.clearCookie('refreshToken', cookieOptions);
+    res.clearCookie('accessToken');
+    res.clearCookie('refreshToken');
     return res.status(200).json(new apiResponse(200, null, 'Logged out successfully'));
 });
 
