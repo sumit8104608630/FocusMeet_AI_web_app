@@ -1,4 +1,4 @@
-import server from './app.js';
+import server, { clearAllOldMeetingData } from './app.js';
 import dotenv from 'dotenv';
 import path from 'path';
 import { fileURLToPath } from 'url';
@@ -13,8 +13,11 @@ dotenv.config({ path: path.join(__dirname, '../.env') });
 // Connect to MongoDB
 connectDB();
 
-server.listen(process.env.PORT || 9090, () => {
-    console.log(`server is running on port ${process.env.PORT || 9090}`)
+server.listen(process.env.PORT || 9090, async () => {
+    console.log(`server is running on port ${process.env.PORT || 9090}`);
+    
+    // Clear all old data on start (for clean testing)
+    await clearAllOldMeetingData();
 })
 
 

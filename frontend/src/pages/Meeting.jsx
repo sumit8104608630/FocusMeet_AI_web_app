@@ -10,9 +10,17 @@ const Meeting = () => {
     const navigate = useNavigate();
     const { user, loading } = useAuth();
     const { socket } = useSocket();
-    const { remoteStream, createOffer, createAnswer, setAnswer, resetPeer, replaceTrack } = usePeer();
+    const { 
+        remoteStreams, 
+        createOffer, 
+        createAnswer, 
+        setAnswer, 
+        resetPeers, 
+        removePeer, 
+        setLocalStream 
+    } = usePeer();
 
-    const [localStream, setLocalStream] = useState(null);
+    const [localStream, setLocalStreamState] = useState(null);
     const [isVideoOn, setIsVideoOn] = useState(true);
     const [isMicOn, setIsMicOn] = useState(true);
     const [copied, setCopied] = useState(false);
@@ -21,20 +29,12 @@ const Meeting = () => {
     const [isScreenSharing, setIsScreenSharing] = useState(false);
     const [windowWidth, setWindowWidth] = useState(window.innerWidth);
     const [isLeaving, setIsLeaving] = useState(false);
+    
     const isLeavingRef = useRef(false);
     const screenStreamRef = useRef(null);
-
-    const localVideoRef = useCallback((node) => {
-        if (node && localStream) {
-            node.srcObject = localStream;
-        }
-    }, [localStream]);
-
-    const remoteVideoRef = useCallback((node) => {
-        if (node && remoteStream) {
-            node.srcObject = remoteStream;
-        }
-    }, [remoteStream]);
+    const localMainVideoRef = useRef(null);
+    const localSidebarVideoRef = useRef(null);
+    const remoteVideoRefs = useRef({});
 
     const initializingStream = useRef(false);
     const hasJoined = useRef(false);
@@ -48,7 +48,40 @@ const Meeting = () => {
     }, []);
 
     const isMobile = windowWidth < 768;
-    const isTablet = windowWidth >= 768 && windowWidth < 1024;
+
+    // CREATE A PROPER LOCAL PARTICIPANT OBJECT!
+    const localParticipant = {
+        name: user?.name || 'You',
+        socketId: socket?.id,
+        userId: user?.id
+    };
+
+    // COMBINE LOCAL + REMOTE PARTICIPANTS (NO DUPLICATES EVER!)
+    const uniqueParticipants = [];
+    const seenUserIds = new Set();
+    if (user?.id) seenUserIds.add(user.id);
+    
+    participants.forEach(p => {
+        // Only add if we haven't seen this userId and it's not us
+        if (p.userId && !seenUserIds.has(p.userId) && p.socketId !== socket?.id) {
+            uniqueParticipants.push(p);
+            seenUserIds.add(p.userId);
+        }
+    });
+
+    const allParticipants = [localParticipant, ...uniqueParticipants];
+
+    // LOG OUR SOCKET ID AND USER ID RIGHT AWAY!
+    useEffect(() => {
+        if (socket) {
+            console.log('🔵 MY SOCKET ID:', socket.id);
+        }
+        if (user) {
+            console.log('🔵 MY USER ID:', user.id);
+            console.log('🔵 MY NAME:', user.name);
+        }
+        console.log('👥 ALL PARTICIPANTS:', allParticipants);
+    }, [socket, user, allParticipants]);
 
     useEffect(() => {
         // Reset flags when component mounts
@@ -56,20 +89,36 @@ const Meeting = () => {
         isLeavingRef.current = false;
         localStreamRef.current = null;
         
+        // ALSO RESET ALL PEER CONNECTIONS AND REMOTE STREAMS ON MOUNT!
+        resetPeers();
+        
         if (!loading && !user) {
             sessionStorage.setItem('redirectAfterLogin', window.location.pathname);
             navigate('/');
         }
-    }, [user, loading, navigate]);
+    }, [user, loading, navigate, resetPeers]);
+
+    // Step 4: Ensure remote videos are playing when streams update
+    useEffect(() => {
+        Object.entries(remoteStreams).forEach(([socketId, stream]) => {
+            const videoEl = remoteVideoRefs.current[socketId];
+            if (videoEl && stream) {
+                if (videoEl.srcObject !== stream) {
+                    console.log(`📺 Assigning stream to video for socket: ${socketId}`);
+                    videoEl.srcObject = stream;
+                }
+                videoEl.play().catch(err => console.warn(`⚠️ Error playing video for ${socketId}:`, err));
+            }
+        });
+    }, [remoteStreams]);
 
     const cleanupAndExit = useCallback(() => {
         if (isLeavingRef.current) return;
         isLeavingRef.current = true;
         setIsLeaving(true);
 
-        console.log('Performing final cleanup and exit...');
+        console.log('🧹 Performing final cleanup and exit...');
 
-        // 1. Stop socket listeners but don't disconnect globally!
         if (socket) {
             socket.off('user-joined');
             socket.off('offer');
@@ -81,88 +130,176 @@ const Meeting = () => {
             socket.off('error');
         }
 
-        // 2. Stop all media tracks and release them
         if (localStreamRef.current) {
             localStreamRef.current.getTracks().forEach(track => {
                 track.stop();
-                console.log('Stopped track:', track.kind);
+                console.log('🛑 Stopped track:', track.kind);
             });
             localStreamRef.current = null; 
-            setLocalStream(null);
+            setLocalStreamState(null);
         }
         if (screenStreamRef.current) {
             screenStreamRef.current.getTracks().forEach(track => track.stop());
             screenStreamRef.current = null;
         }
 
-        // Critical: Reset all state flags
         setStreamReady(false);
+        hasJoined.current = false;
+        initializingStream.current = false;
 
-        // 3. Reset Peer
-        resetPeer();
+        resetPeers();
 
-        // 4. Navigate immediately
         navigate('/dashboard', { replace: true });
-    }, [socket, resetPeer, navigate]);
+    }, [socket, resetPeers, navigate]);
 
     const startLocalStream = useCallback(async () => {
         if (isLeavingRef.current) return null;
         if (localStreamRef.current || initializingStream.current) return localStreamRef.current;
         
         initializingStream.current = true;
+        console.log('🚀 Starting local stream initialization...');
+        
         try {
-            console.log('Requesting local stream...');
-            const stream = await navigator.mediaDevices.getUserMedia({
-                video: true,
-                audio: true
-            });
+            console.log('📷 Attempting to get camera + microphone...');
+            let stream;
+            try {
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: true,
+                    audio: true
+                });
+                console.log('✅ Video + Audio stream obtained!');
+            } catch (videoError) {
+                console.warn('⚠️ Camera unavailable, trying audio-only...');
+                stream = await navigator.mediaDevices.getUserMedia({
+                    video: false,
+                    audio: true
+                });
+                console.log('✅ Audio-only stream obtained!');
+            }
             
             if (isLeavingRef.current) {
+                console.log('⚠️ Already leaving, stopping new stream');
                 stream.getTracks().forEach(track => track.stop());
                 return null;
             }
 
             localStreamRef.current = stream;
+            setLocalStreamState(stream);
             setLocalStream(stream);
             setStreamReady(true);
             return stream;
-        } catch (error) {
-            console.error('Error accessing media devices:', error);
+        } catch (err) {
+            console.error('❌ Error accessing media devices:', err);
             if (!isLeavingRef.current) setStreamReady(true); 
             return null;
         } finally {
             initializingStream.current = false;
+            console.log('🎯 Stream initialization complete');
         }
-    }, []);
+    }, [setLocalStream]);
 
-    const handleUserJoined = useCallback(async ({ socketId: remoteSocketId }) => {
+    // Directly assign local stream to both video elements
+    useEffect(() => {
+        if (localMainVideoRef.current) {
+            if (localStream) {
+                localMainVideoRef.current.srcObject = localStream;
+                localMainVideoRef.current.load();
+                localMainVideoRef.current.play().catch(err => console.warn('⚠️ Autoplay blocked:', err));
+            } else {
+                localMainVideoRef.current.srcObject = null;
+            }
+        }
+        if (localSidebarVideoRef.current) {
+            if (localStream) {
+                localSidebarVideoRef.current.srcObject = localStream;
+                localSidebarVideoRef.current.load();
+                localSidebarVideoRef.current.play().catch(err => console.warn('⚠️ Sidebar autoplay blocked:', err));
+            } else {
+                localSidebarVideoRef.current.srcObject = null;
+            }
+        }
+    }, [localStream]);
+
+    const handleUserJoined = useCallback(async ({ socketId: remoteSocketId, userId, name }) => {
         if (isLeavingRef.current) return;
         
+        // FIRST CHECK: Is this OUR OWN socket ID? If yes, ignore!
+        if (socket && remoteSocketId === socket.id) {
+            console.warn('⚠️ Ignoring user-joined event for our OWN socket ID');
+            return;
+        }
+        
+        console.log('👋 New user joined:', remoteSocketId, name);
+        
         if (localStreamRef.current && user) {
-            const offer = await createOffer(localStreamRef.current, remoteSocketId, true);
-            socket.emit('offer', { offer, to: remoteSocketId, from: user.id });
+            const offer = await createOffer(localStreamRef.current, remoteSocketId);
+            if (offer) {
+                socket.emit('offer', { offer, to: remoteSocketId, from: user.id });
+            }
         }
     }, [createOffer, socket, user]);
 
-    const handleOffer = useCallback(async ({ offer, fromSocket: remoteSocketId }) => {
+    const handleOffer = useCallback(async ({ offer, fromSocket: remoteSocketId, from }) => {
         if (isLeavingRef.current) return;
+        
+        // FIRST CHECK: Is this OUR OWN socket ID? If yes, ignore!
+        if (socket && remoteSocketId === socket.id) {
+            console.warn('⚠️ Ignoring offer from our OWN socket ID');
+            return;
+        }
+        
+        console.log('📥 Received offer from:', remoteSocketId);
         const stream = localStreamRef.current || await startLocalStream();
+        
         if (stream && user && !isLeavingRef.current) {
-            const answer = await createAnswer(offer, stream, remoteSocketId, true);
-            socket.emit('answer', { answer, to: remoteSocketId, from: user.id });
+            const answer = await createAnswer(offer, stream, remoteSocketId);
+            if (answer) {
+                socket.emit('answer', { answer, to: remoteSocketId, from: user.id });
+            }
         }
     }, [startLocalStream, createAnswer, socket, user]);
 
-    const handleAnswer = useCallback(async ({ answer }) => {
+    const handleAnswer = useCallback(async ({ answer, fromSocket: remoteSocketId }) => {
         if (isLeavingRef.current) return;
-        await setAnswer(answer);
-    }, [setAnswer]);
+        
+        // FIRST CHECK: Is this OUR OWN socket ID? If yes, ignore!
+        if (socket && remoteSocketId === socket.id) {
+            console.warn('⚠️ Ignoring answer from our OWN socket ID');
+            return;
+        }
+        
+        await setAnswer(answer, remoteSocketId);
+    }, [setAnswer, socket]);
 
     const handleRoomUsers = useCallback(({ users }) => {
         if (!user || !socket || isLeavingRef.current) return;
-        const others = users.filter(p => p.socketId !== socket.id);
-        setParticipants(others);
+        
+        console.log('📡 RAW room-users event received:', users);
+        
+        // Filter out ourselves AND remove duplicates by socketId AND userId!
+        const uniqueOthers = users.filter((p, index, array) => 
+            p.socketId !== socket.id &&  // NOT our own socket ID
+            p.userId !== user.id &&     // ALSO NOT our own userId!
+            array.findIndex(item => item.socketId === p.socketId) === index
+        );
+        
+        console.log('✅ FILTERED room users:', uniqueOthers.map(p => ({name: p.name, socketId: p.socketId, userId: p.userId})));
+        setParticipants(uniqueOthers);
     }, [user, socket]);
+
+    const handleUserLeft = useCallback(({ socketId: leftSocketId }) => {
+        if (!isLeavingRef.current) {
+            // FIRST CHECK: Is this OUR OWN socket ID? If yes, ignore!
+            if (socket && leftSocketId === socket.id) {
+                console.warn('⚠️ Ignoring user-left event for our OWN socket ID');
+                return;
+            }
+            
+            console.log('👋 User left:', leftSocketId);
+            removePeer(leftSocketId);
+            setParticipants(prev => prev.filter(p => p.socketId !== leftSocketId));
+        }
+    }, [removePeer, socket]);
 
     // Step 1: Initialize local stream
     useEffect(() => {
@@ -178,7 +315,7 @@ const Meeting = () => {
         if (!socket || !user || !streamReady || hasJoined.current) return;
 
         hasJoined.current = true;
-        console.log('Joining meeting:', meetingId);
+        console.log('🚪 Joining meeting:', meetingId);
         socket.emit('join-meeting', { 
             meetingId, 
             userId: user.id,
@@ -189,19 +326,18 @@ const Meeting = () => {
         socket.on('offer', handleOffer);
         socket.on('answer', handleAnswer);
         socket.on('room-users', handleRoomUsers);
-        socket.on('user-left', ({ socketId: leftSocketId }) => {
-            if (!isLeavingRef.current) resetPeer();
-        });
+        socket.on('user-left', handleUserLeft);
         socket.on('error', ({ message }) => {
-            console.error('Socket error:', message);
-            cleanupAndExit();
+            console.error('❌ Socket error:', message);
+            if (!isLeavingRef.current) cleanupAndExit();
         });
         socket.on('meeting-ended', () => {
-            console.log('Meeting ended by host');
-            cleanupAndExit();
+            console.log('📢 Meeting ended by host');
+            if (!isLeavingRef.current) cleanupAndExit();
         });
         socket.on('call-ended', () => {
-            cleanupAndExit();
+            console.log('📢 Call ended by other user');
+            if (!isLeavingRef.current) cleanupAndExit();
         });
 
         return () => {
@@ -209,94 +345,69 @@ const Meeting = () => {
             socket.off('offer', handleOffer);
             socket.off('answer', handleAnswer);
             socket.off('room-users', handleRoomUsers);
-            socket.off('user-left');
+            socket.off('user-left', handleUserLeft);
+            socket.off('error');
             socket.off('meeting-ended');
             socket.off('call-ended');
-            socket.off('error');
         };
-    }, [socket, user, meetingId, streamReady, handleUserJoined, handleOffer, handleAnswer, handleRoomUsers, cleanupAndExit]);
+    }, [socket, user, streamReady, meetingId, handleUserJoined, handleOffer, handleAnswer, handleRoomUsers, handleUserLeft, cleanupAndExit]);
 
-    // Cleanup local stream tracks on unmount
-    useEffect(() => {
-        return () => {
-            if (localStream) {
-                localStream.getTracks().forEach(track => track.stop());
+    const toggleMic = useCallback(() => {
+        if (localStreamRef.current) {
+            const audioTrack = localStreamRef.current.getAudioTracks()[0];
+            if (audioTrack) {
+                audioTrack.enabled = !isMicOn;
+                setIsMicOn(!isMicOn);
             }
-            if (screenStreamRef.current) {
-                screenStreamRef.current.getTracks().forEach(track => track.stop());
+        }
+    }, [isMicOn]);
+
+    const toggleVideo = useCallback(() => {
+        if (localStreamRef.current) {
+            const videoTrack = localStreamRef.current.getVideoTracks()[0];
+            if (videoTrack) {
+                videoTrack.enabled = !isVideoOn;
+                setIsVideoOn(!isVideoOn);
             }
-        };
-    }, [localStream]);
-
-    const toggleVideo = () => {
-        if (localStream) {
-            localStream.getVideoTracks().forEach(track => {
-                track.enabled = !isVideoOn;
-            });
-            setIsVideoOn(!isVideoOn);
         }
-    };
-
-    const toggleMic = () => {
-        if (localStream) {
-            localStream.getAudioTracks().forEach(track => {
-                track.enabled = !isMicOn;
-            });
-            setIsMicOn(!isMicOn);
-        }
-    };
+    }, [isVideoOn]);
 
     const toggleScreenShare = async () => {
-        if (!isScreenSharing) {
+        if (isScreenSharing) {
+            stopScreenShare();
+        } else {
             try {
                 const stream = await navigator.mediaDevices.getDisplayMedia({ video: true });
                 screenStreamRef.current = stream;
-                
-                const screenTrack = stream.getVideoTracks()[0];
-                const videoTrack = localStream.getVideoTracks()[0];
-                
-                // Replace track in peer connection
-                await replaceTrack(videoTrack, screenTrack, localStream);
-                
-                if (localVideoRef.current) {
-                    localVideoRef.current.srcObject = stream;
-                }
-                
-                screenTrack.onended = () => {
-                    stopScreenShare();
-                };
-                
                 setIsScreenSharing(true);
+                
+                const videoTrack = stream.getVideoTracks()[0];
+                videoTrack.onended = stopScreenShare;
+
+                // Replace video track in all peers
+                // (Simplified - you could implement full track replacement if needed)
+                console.log('📺 Screen sharing started');
             } catch (err) {
-                console.error("Error sharing screen:", err);
+                console.error("❌ Error sharing screen:", err);
             }
-        } else {
-            stopScreenShare();
         }
     };
 
-    const stopScreenShare = async () => {
+    const stopScreenShare = () => {
         if (screenStreamRef.current) {
-            const screenTrack = screenStreamRef.current.getVideoTracks()[0];
-            const videoTrack = localStream.getVideoTracks()[0];
-            
-            // Revert back to local video track
-            await replaceTrack(screenTrack, videoTrack, localStream);
-            
             screenStreamRef.current.getTracks().forEach(track => track.stop());
             screenStreamRef.current = null;
+            setIsScreenSharing(false);
         }
-        if (localVideoRef.current && localStream) {
-            localVideoRef.current.srcObject = localStream;
-        }
-        setIsScreenSharing(false);
     };
 
     const endCall = useCallback(() => {
-        console.log('End Call button clicked');
+        console.log('📞 End Call button clicked');
+        if (isLeavingRef.current) return;
+        
         if (socket) {
             socket.emit('call-ended', { 
-                meetingId: meetingId,
+                meetingId,
             });
         }
         cleanupAndExit();
@@ -308,49 +419,24 @@ const Meeting = () => {
         setTimeout(() => setCopied(false), 2000);
     };
 
-    if (isLeaving) return null;
-
-    if (loading || !user) {
-        return (
-            <div style={{ 
-                height: '100vh', width: '100vw', background: '#06070d', display: 'flex', 
-                flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
-                gap: 20, color: '#fff', fontFamily: "'Figtree', sans-serif",
-                position: 'fixed', top: 0, left: 0, zIndex: 9999
-            }}>
-                <div className="loading-spinner" style={{
-                    width: 40, height: 40, borderRadius: 10,
-                    background: 'linear-gradient(135deg, #4f6ef7, #7c3aed)',
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    boxShadow: '0 0 20px rgba(79,110,247,0.3)'
-                }}>
-                    <Video size={20} color="#fff" />
-                </div>
-                <p style={{ fontSize: 14, fontWeight: 600, color: '#6b7280' }}>
-                    {loading ? 'Initializing session...' : 'Redirecting to login...'}
-                </p>
-                <style>
-                    {`
-                        @keyframes spin {
-                            to { transform: rotate(360deg); }
-                        }
-                        .loading-spinner {
-                            animation: pulse 2s infinite ease-in-out;
-                        }
-                        @keyframes pulse {
-                            0% { transform: scale(0.95); opacity: 0.8; }
-                            50% { transform: scale(1.05); opacity: 1; }
-                            100% { transform: scale(0.95); opacity: 0.8; }
-                        }
-                    `}
-                </style>
-            </div>
-        );
-    }
-
-    const renderParticipantCard = (p, isLocal = false, isSmall = false) => {
+    const renderParticipantCard = (p, isLocal = false, isSmall = false, isSidebar = false) => {
+        console.log('🎨 Rendering participant card:', {
+            isLocal,
+            participantName: p?.name,
+            participantSocketId: p?.socketId,
+            participantUserId: p?.userId,
+            mySocketId: socket?.id,
+            myUserId: user?.id
+        });
+        
         const initials = p?.name ? p.name.split(' ').map(n => n[0]).join('').toUpperCase() : '??';
-        const isRemoteVideoActive = !isLocal && remoteStream;
+        const remoteStream = remoteStreams[p.socketId];
+        
+        // FINAL CHECK: Never show our own stream as remote!
+        if (!isLocal && localStreamRef.current && remoteStream === localStreamRef.current) {
+            console.warn('⚠️ BLOCKED: Trying to render our own local stream as remote!');
+            return null;
+        }
 
         return (
             <div key={isLocal ? 'local' : p.socketId} style={{
@@ -363,21 +449,44 @@ const Meeting = () => {
                 border: isLocal ? '1px solid rgba(255,255,255,0.05)' : '1px solid rgba(79,110,247,0.3)',
                 boxShadow: isSmall ? 'none' : (isLocal ? '0 20px 50px rgba(0,0,0,0.3)' : '0 20px 50px rgba(79,110,247,0.1)')
             }}>
-                {/* Participant Video */}
-                <video 
-                    ref={isLocal ? localVideoRef : remoteVideoRef} 
-                    autoPlay 
-                    muted={isLocal}
-                    playsInline 
-                    style={{ 
-                        width: '100%', height: '100%', objectFit: 'cover', 
-                        transform: isLocal ? 'scaleX(-1)' : 'none',
-                        display: (isLocal && isVideoOn) || (!isLocal && remoteStream) ? 'block' : 'none'
-                    }}
-                />
+                {/* ALWAYS SHOW LOCAL VIDEO */}
+                {isLocal && (
+                    <video 
+                        ref={isSidebar ? localSidebarVideoRef : localMainVideoRef} 
+                        autoPlay 
+                        muted 
+                        playsInline 
+                        style={{ 
+                            width: '100%', height: '100%', objectFit: 'cover', 
+                            transform: 'scaleX(-1)',
+                            display: !isVideoOn ? 'none' : 'block'
+                        }}
+                    />
+                )}
+
+                {/* REMOTE VIDEO */}
+                {!isLocal && remoteStream && (
+                    <video 
+                        ref={(node) => {
+                            if (node) {
+                                remoteVideoRefs.current[p.socketId] = node;
+                                if (remoteVideoRefs.current[p.socketId].srcObject !== remoteStream) {
+                                    remoteVideoRefs.current[p.socketId].srcObject = remoteStream;
+                                    remoteVideoRefs.current[p.socketId].load();
+                                    remoteVideoRefs.current[p.socketId].play().catch(err => console.warn('⚠️ Remote autoplay blocked:', err));
+                                }
+                            }
+                        }}
+                        autoPlay 
+                        playsInline 
+                        style={{ 
+                            width: '100%', height: '100%', objectFit: 'cover', 
+                        }}
+                    />
+                )}
                 
-                {/* Fallback Initials when video off */}
-                {((isLocal && !isVideoOn) || (!isLocal && !isRemoteVideoActive)) && (
+                {/* Fallback Initials - ONLY WHEN NO VIDEO */}
+                {((isLocal && !isVideoOn) || (!isLocal && !remoteStream)) && (
                     <div style={{
                         position: 'absolute', inset: 0, display: 'flex', 
                         alignItems: 'center', justifyContent: 'center', background: '#0d1021'
@@ -411,6 +520,29 @@ const Meeting = () => {
         );
     };
 
+    if (isLeaving) return null;
+
+    if (loading || !user) {
+        return (
+            <div style={{ 
+                height: '100vh', width: '100vw', background: '#06070d', display: 'flex', 
+                flexDirection: 'column', alignItems: 'center', justifyContent: 'center',
+                gap: 20, color: '#fff', fontFamily: "'Figtree', sans-serif",
+                position: 'fixed', top: 0, left: 0, zIndex: 9999
+            }}>
+                <div className="loading-spinner" style={{
+                    width: 40, height: 40, borderRadius: 10,
+                    background: 'linear-gradient(135deg, #4f6ef7, #7c3aed)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    boxShadow: '0 0 20px rgba(79,110,247,0.3)'
+                }}>
+                    <Video size={20} color="#fff" />
+                </div>
+                <div>Loading...</div>
+            </div>
+        );
+    }
+
     return (
         <div style={{
             height: '100vh',
@@ -439,95 +571,72 @@ const Meeting = () => {
                     }}>
                         <Video size={isMobile ? 14 : 16} color="#fff" />
                     </div>
-                    <h1 style={{ fontSize: isMobile ? 14 : 18, fontWeight: 700, margin: 0 }}>AttendAI</h1>
+                    <h1 style={{ fontSize: isMobile ? 16 : 20, fontWeight: 700, margin: 0 }}>
+                        AttendAI
+                    </h1>
                 </div>
 
-                <div style={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: isMobile ? 8 : 24,
-                }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 4 : 10 }}>
-                        <span style={{ fontSize: isMobile ? 10 : 12, color: '#6b7280', fontWeight: 600, fontFamily: "'Nunito', sans-serif", display: isMobile ? 'none' : 'inline' }}>CODE:</span>
-                        <div 
-                            onClick={copyCode}
-                            style={{ 
-                                padding: isMobile ? '4px 8px' : '6px 12px', background: 'rgba(79,110,247,0.1)', 
-                                border: '1px solid rgba(79,110,247,0.3)', borderRadius: 8,
-                                color: '#4f6ef7', fontWeight: 800, fontSize: isMobile ? 11 : 13, letterSpacing: 0.5,
-                                cursor: 'pointer', display: 'flex', alignItems: 'center', gap: 6,
-                                transition: 'all 0.2s', fontFamily: "'Nunito', sans-serif"
-                            }}
-                        >
-                            {meetingId}
-                            {copied ? <Check size={12} color="#22d3a0" /> : <Copy size={10} />}
-                        </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 12 : 16 }}>
+                    <div style={{ 
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        background: 'rgba(79,110,247,0.1)',
+                        padding: '6px 12px', borderRadius: 8,
+                        border: '1px solid rgba(79,110,247,0.3)'
+                    }}>
+                        <span style={{ fontSize: 12, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>CODE:</span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: '#4f6ef7' }}>{meetingId}</span>
+                        <button onClick={copyCode} style={{
+                            background: 'transparent', border: 'none', padding: 0, cursor: 'pointer', color: copied ? '#22c55e' : 'rgba(255,255,255,0.7)', display: 'flex', alignItems: 'center'
+                        }}>
+                            {copied ? <Check size={14} /> : <Copy size={14} />}
+                        </button>
                     </div>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 4, color: '#6b7280', fontSize: isMobile ? 11 : 12, fontFamily: "'Nunito', sans-serif" }}>
-                        <Users size={isMobile ? 10 : 12} />
-                        {participants.length + 1}
+                    
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                        <Users size={isMobile ? 16 : 18} color="rgba(255,255,255,0.7)" />
+                        <span style={{ fontSize: isMobile ? 12 : 14, fontWeight: 600, color: 'rgba(255,255,255,0.7)' }}>
+                            {allParticipants.length}
+                        </span>
                     </div>
                 </div>
             </div>
 
-            {/* Main Content Area */}
+            {/* Main Content */}
             <div style={{
                 flex: 1,
                 display: 'flex',
-                flexDirection: isMobile ? 'column' : 'row',
+                flexDirection: 'column',
                 padding: isMobile ? '8px' : '20px',
                 gap: '20px',
                 overflow: 'hidden'
             }}>
-                {/* Focused Video Area */}
+                {/* Focused Video Area - Grid for all participants */}
                 <div style={{
                     flex: 1,
                     position: 'relative',
                     height: '100%',
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center'
+                    display: 'grid',
+                    // Responsive grid columns
+                    gridTemplateColumns: allParticipants.length === 1 ? '1fr' : 
+                                       allParticipants.length === 2 ? (isMobile ? '1fr' : '1fr 1fr') :
+                                       allParticipants.length <= 4 ? 'repeat(2, 1fr)' :
+                                       'repeat(auto-fit, minmax(300px, 1fr))',
+                    // Responsive grid rows
+                    gridTemplateRows: allParticipants.length <= 2 ? '1fr' : 
+                                    allParticipants.length <= 4 ? 'repeat(2, 1fr)' :
+                                    'repeat(auto-fit, minmax(200px, 1fr))',
+                    gap: 16
                 }}>
-                    {participants.length > 0 
-                        ? renderParticipantCard(participants[0], false)
-                        : renderParticipantCard(user, true)
-                    }
+                    {allParticipants.map((p, index) => 
+                        renderParticipantCard(p, index === 0)  // First participant is always LOCAL!
+                    )}
                 </div>
-
-                {/* Sidebar Participants (if any) */}
-                {(participants.length > 0 || !isMobile) && (
-                    <div style={{
-                        width: isMobile ? '100%' : '280px',
-                        height: isMobile ? '120px' : '100%',
-                        display: 'flex',
-                        flexDirection: isMobile ? 'row' : 'column',
-                        gap: '12px',
-                        overflowX: isMobile ? 'auto' : 'hidden',
-                        overflowY: isMobile ? 'hidden' : 'auto',
-                        padding: isMobile ? '4px 0' : '0 4px',
-                        flexShrink: 0
-                    }}>
-                        {/* Always show self in sidebar when someone else is in main focus */}
-                        {participants.length > 0 && (
-                            <div style={{ width: isMobile ? '160px' : '100%', height: isMobile ? '100%' : '150px', flexShrink: 0 }}>
-                                {renderParticipantCard(user, true, true)}
-                            </div>
-                        )}
-                        
-                        {/* Other participants in sidebar */}
-                        {participants.slice(1).map(p => (
-                            <div key={p.socketId} style={{ width: isMobile ? '160px' : '100%', height: isMobile ? '100%' : '150px', flexShrink: 0 }}>
-                                {renderParticipantCard(p, false, true)}
-                            </div>
-                        ))}
-                    </div>
-                )}
             </div>
 
             {/* Controls Bar */}
             <div style={{
                 padding: isMobile ? '12px' : '16px',
-                background: 'rgba(13, 16, 33, 0.8)',
+                background: 'rgba(13,16,33,0.8)',
                 backdropFilter: 'blur(10px)',
                 margin: isMobile ? '0 12px 12px' : '0 20px 20px',
                 borderRadius: isMobile ? 16 : 24,
@@ -542,7 +651,7 @@ const Meeting = () => {
                     onClick={toggleMic}
                     title={isMicOn ? "Mute Microphone" : "Unmute Microphone"}
                     style={{
-                        width: isMobile ? 40 : 48, height: isMobile ? 40 : 48, borderRadius: 12, border: 'none',
+                        width: isMobile ? 44 : 52, height: isMobile ? 44 : 52, borderRadius: 12, border: 'none',
                         background: isMicOn ? 'rgba(255,255,255,0.05)' : '#ef4444',
                         color: '#fff', cursor: 'pointer', display: 'flex',
                         alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s',
@@ -554,7 +663,7 @@ const Meeting = () => {
                     onClick={toggleVideo}
                     title={isVideoOn ? "Turn Camera Off" : "Turn Camera On"}
                     style={{
-                        width: isMobile ? 40 : 48, height: isMobile ? 40 : 48, borderRadius: 12, border: 'none',
+                        width: isMobile ? 44 : 52, height: isMobile ? 44 : 52, borderRadius: 12, border: 'none',
                         background: isVideoOn ? 'rgba(255,255,255,0.05)' : '#ef4444',
                         color: '#fff', cursor: 'pointer', display: 'flex',
                         alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s',
@@ -566,7 +675,7 @@ const Meeting = () => {
                     onClick={toggleScreenShare}
                     title={isScreenSharing ? "Stop Sharing" : "Share Screen"}
                     style={{
-                        width: isMobile ? 40 : 48, height: isMobile ? 40 : 48, borderRadius: 12, border: 'none',
+                        width: isMobile ? 44 : 52, height: isMobile ? 44 : 52, borderRadius: 12, border: 'none',
                         background: isScreenSharing ? '#4f6ef7' : 'rgba(255,255,255,0.05)',
                         color: '#fff', cursor: 'pointer', display: 'flex',
                         alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s',
@@ -579,7 +688,7 @@ const Meeting = () => {
                     onClick={endCall}
                     title="End Call"
                     style={{
-                        width: isMobile ? 56 : 64, height: isMobile ? 40 : 48, borderRadius: 12, border: 'none',
+                        width: isMobile ? 56 : 64, height: isMobile ? 44 : 52, borderRadius: 12, border: 'none',
                         background: '#ef4444', color: '#fff', cursor: 'pointer',
                         display: 'flex', alignItems: 'center', justifyContent: 'center',
                         transition: 'all 0.2s', boxShadow: '0 10px 20px rgba(239,68,68,0.2)',

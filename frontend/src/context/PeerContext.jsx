@@ -1,318 +1,377 @@
 import React, { 
-   createContext, 
-   useCallback, 
-   useContext, 
-   useEffect, 
-   useRef, 
-   useState, 
- } from "react"; 
- import { useSocket } from "./SocketContext"; 
- 
- 
- const PeerContext = createContext(null); 
- 
- 
-   // ─── Constants ───────────────────────────────────────────────────────────── 
- const ICE_SERVERS = { 
-   iceServers: [ 
-     // --- TURN Servers (Primary) --- 
-     { 
-       urls: "turn:global.relay.metered.ca:80", 
-       username: "9abe2392a35d2cc1474c2eee", 
-       credential: "5ZR0R5WRC7DmLLmn", 
-     }, 
-     { 
-       urls: "turn:global.relay.metered.ca:80?transport=tcp", 
-       username: "9abe2392a35d2cc1474c2eee", 
-       credential: "5ZR0R5WRC7DmLLmn", 
-     }, 
-     { 
-       urls: "turn:global.relay.metered.ca:443", 
-       username: "9abe2392a35d2cc1474c2eee", 
-       credential: "5ZR0R5WRC7DmLLmn", 
-     }, 
-     { 
-       urls: "turns:global.relay.metered.ca:443?transport=tcp", 
-       username: "9abe2392a35d2cc1474c2eee", 
-       credential: "5ZR0R5WRC7DmLLmn", 
-     }, 
-     // --- STUN Servers (Fallback) --- 
-     { urls: "stun:stun.l.google.com:19302" }, 
-     { urls: "stun:stun1.l.google.com:19302" }, 
-     { urls: "stun:stun2.l.google.com:19302" }, 
-     { urls: "stun:stun.services.mozilla.com" }, 
-     { urls: "stun:stun.relay.metered.ca:80" }, 
-   ], 
- }; 
- 
- 
- // ─── Peer Provider Component ──────────────────────────────────────────────── 
- export const PeerProvider = ({ children }) => { 
-   // ── Refs ────────────────────────────────────────────────────────────────── 
-   const peerRef       = useRef(null); 
-   const callTargetRef = useRef(null); 
-   const iceCandidates = useRef([]); 
-   const remoteStreamRef = useRef(null); 
- 
- 
-   // ── State ───────────────────────────────────────────────────────────────── 
-   const [remoteStream, setRemoteStream] = useState(null); 
-   const { socket } = useSocket(); 
- 
- 
-   // ── Remote Stream Management ────────────────────────────────────────────── 
-   const updateRemoteStream = useCallback((stream) => { 
-     remoteStreamRef.current = stream; 
-     setRemoteStream(stream); 
-   }, []); 
- 
- 
-   // ── ICE Candidate Management ────────────────────────────────────────────── 
-   const flushIceCandidates = useCallback(async () => { 
-     const peer = peerRef.current; 
-     if (!peer || !peer.remoteDescription) return; 
- 
- 
-     while (iceCandidates.current.length > 0) { 
-       const candidate = iceCandidates.current.shift(); 
-       try { 
-         await peer.addIceCandidate(candidate); 
-       } catch (err) { 
-         // Silent catch for queued candidates 
-       } 
-     } 
-   }, []); 
- 
- 
-   // ── Peer Connection Lifecycle ───────────────────────────────────────────── 
-   const buildPeer = useCallback(() => { 
-     if (peerRef.current) { 
-       peerRef.current.close(); 
-       peerRef.current = null; 
-     } 
- 
- 
-     remoteStreamRef.current = null; 
-     setRemoteStream(null); 
- 
- 
-     const peer = new RTCPeerConnection(ICE_SERVERS); 
- 
- 
-     // Forward local ICE candidates to the remote peer 
-     peer.onicecandidate = ({ candidate }) => { 
-       if (candidate && socket && callTargetRef.current) { 
-         socket.emit("ice-candidate", { 
-           candidate, 
-           to: callTargetRef.current, 
-         }); 
-       } 
-     }; 
- 
- 
-     // Handle incoming media tracks 
-     peer.ontrack = (event) => { 
-       if (!remoteStreamRef.current) { 
-         remoteStreamRef.current = new MediaStream(); 
-       } 
-       
-       const existingTracks = remoteStreamRef.current.getTracks(); 
-       if (!existingTracks.find(t => t.id === event.track.id)) { 
-         remoteStreamRef.current.addTrack(event.track); 
-       } 
- 
- 
-       updateRemoteStream(new MediaStream(remoteStreamRef.current.getTracks())); 
-     }; 
- 
- 
-     peer.onconnectionstatechange = () => { 
-       if ( 
-         peer.connectionState === "failed" || 
-         peer.connectionState === "closed" 
-       ) { 
-         updateRemoteStream(null); 
-       } 
-     }; 
- 
- 
-     peerRef.current = peer; 
-     return peer; 
-   }, [socket, updateRemoteStream]); 
- 
- 
-   // ── Call Target Management ──────────────────────────────────────────────── 
-   const setCallTarget = useCallback((targetId) => { 
-     callTargetRef.current = targetId; 
-   }, []); 
- 
- 
-   // ── Signaling Actions ───────────────────────────────────────────────────── 
-   const createOffer = useCallback( 
-     async (stream, targetId, isVideo = false) => { 
-       setCallTarget(targetId); 
-       iceCandidates.current = []; 
- 
- 
-       const peer = buildPeer(); 
- 
- 
-       stream.getTracks().forEach((track) => { 
-         peer.addTrack(track, stream); 
-       }); 
- 
- 
-       const offer = await peer.createOffer({ 
-         offerToReceiveAudio: true, 
-         offerToReceiveVideo: isVideo, 
-       }); 
-       
-       await peer.setLocalDescription(offer); 
-       return offer; 
-     }, 
-     [buildPeer, setCallTarget] 
-   ); 
- 
- 
-   const createAnswer = useCallback( 
-     async (offer, stream, targetId, isVideo = false) => { 
-       const peer = buildPeer(); 
-       setCallTarget(targetId); 
- 
- 
-       stream.getTracks().forEach((track) => { 
-         peer.addTrack(track, stream); 
-       }); 
- 
- 
-       try { 
-         await peer.setRemoteDescription(new RTCSessionDescription(offer)); 
-         await flushIceCandidates(); 
- 
- 
-         const answer = await peer.createAnswer({ 
-           offerToReceiveAudio: true, 
-           offerToReceiveVideo: isVideo, 
-         }); 
-         
-         await peer.setLocalDescription(answer); 
-         return answer; 
-       } catch (err) { 
-         throw err; 
-       } 
-     }, 
-     [buildPeer, flushIceCandidates, setCallTarget] 
-   ); 
- 
- 
- const setAnswer = useCallback(async (answer) => { 
-     const peer = peerRef.current; 
-     if (!peer) return; 
-     if (peer.signalingState === "stable") return; 
- 
- 
-     try { 
-         await peer.setRemoteDescription(new RTCSessionDescription(answer)); 
-         await flushIceCandidates(); 
-     } catch (err) { 
-         // Handle answer error silently 
-     } 
- }, [flushIceCandidates]); 
- 
- 
-   const resetPeer = useCallback(() => { 
-    callTargetRef.current = null; 
-    iceCandidates.current  = []; 
-    if (peerRef.current) { 
-      peerRef.current.close(); 
-      peerRef.current = null; 
-    } 
-    if (remoteStreamRef.current) {
-      remoteStreamRef.current.getTracks().forEach(track => track.stop());
-      remoteStreamRef.current = null;
-    }
-    updateRemoteStream(null); 
-  }, [updateRemoteStream]); 
- 
- 
-  const replaceTrack = useCallback(async (oldTrack, newTrack, stream) => {
-    const peer = peerRef.current;
-    if (!peer) return;
+  createContext, 
+  useCallback, 
+  useContext, 
+  useEffect, 
+  useRef, 
+  useState, 
+} from "react"; 
+import { useSocket } from "./SocketContext"; 
 
-    const senders = peer.getSenders();
-    const sender = senders.find(s => s.track === oldTrack);
-    
-    if (sender) {
-        await sender.replaceTrack(newTrack);
+
+const PeerContext = createContext(null); 
+
+
+  // ─── Constants ───────────────────────────────────────────────────────────── 
+const ICE_SERVERS = { 
+  iceServers: [ 
+    // --- TURN Servers (Primary) --- 
+    { 
+      urls: "turn:global.relay.metered.ca:80", 
+      username: "9abe2392a35d2cc1474c2eee", 
+      credential: "5ZR0R5WRC7DmLLmn", 
+    }, 
+    { 
+      urls: "turn:global.relay.metered.ca:80?transport=tcp", 
+      username: "9abe2392a35d2cc1474c2eee", 
+      credential: "5ZR0R5WRC7DmLLmn", 
+    }, 
+    { 
+      urls: "turn:global.relay.metered.ca:443", 
+      username: "9abe2392a35d2cc1474c2eee", 
+      credential: "5ZR0R5WRC7DmLLmn", 
+    }, 
+    { 
+      urls: "turns:global.relay.metered.ca:443?transport=tcp", 
+      username: "9abe2392a35d2cc1474c2eee", 
+      credential: "5ZR0R5WRC7DmLLmn", 
+    }, 
+    // --- STUN Servers (Fallback) --- 
+    { urls: "stun:stun.l.google.com:19302" }, 
+    { urls: "stun:stun1.l.google.com:19302" }, 
+    { urls: "stun:stun2.l.google.com:19302" }, 
+    { urls: "stun:stun.services.mozilla.com" }, 
+    { urls: "stun:stun.relay.metered.ca:80" }, 
+  ], 
+}; 
+
+
+// ─── Peer Provider Component ──────────────────────────────────────────────── 
+export const PeerProvider = ({ children }) => { 
+  // ── Refs ────────────────────────────────────────────────────────────────── 
+  const peersRef       = useRef({}); // Map<socketId, RTCPeerConnection>
+  const iceCandidatesRef = useRef({}); // Map<socketId, candidate[]>
+  const remoteStreamsRef = useRef({}); // Map<socketId, MediaStream>
+  const localStreamRef = useRef(null);
+
+
+  // ── State ───────────────────────────────────────────────────────────────── 
+  const [remoteStreams, setRemoteStreams] = useState({}); // Map<socketId, MediaStream>
+  const { socket } = useSocket(); 
+
+
+  // ── Helper: Get or Create Peer Connection ─────────────────────────────────
+  const getOrCreatePeer = useCallback((socketId, localStream) => {
+    // FIRST CHECK: Is this OUR OWN SOCKET ID? If yes, RETURN NULL and do NOTHING!
+    if (socket && socketId === socket.id) {
+      console.warn('⚠️ Ignoring peer creation request for our OWN socket ID:', socketId);
+      return null;
     }
+    
+    if (peersRef.current[socketId]) {
+      return peersRef.current[socketId];
+    }
+
+    const peer = new RTCPeerConnection(ICE_SERVERS);
+    peersRef.current[socketId] = peer;
+    iceCandidatesRef.current[socketId] = [];
+
+    // Add local tracks to this peer
+    if (localStream) {
+      localStream.getTracks().forEach((track) => {
+        console.log('➕ Adding local track to peer:', track.kind, 'for socket:', socketId);
+        peer.addTrack(track, localStream);
+      });
+    }
+
+    // Forward local ICE candidates
+    peer.onicecandidate = ({ candidate }) => { 
+      if (candidate && socket) {
+        console.log('📤 Generated local ICE candidate for socket:', socketId);
+        socket.emit("ice-candidate", { 
+          candidate, 
+          to: socketId, 
+        }); 
+      } 
+    }; 
+
+    // Handle incoming media tracks
+    peer.ontrack = (event) => { 
+      console.log('✅ ontrack event received from socket:', socketId, 'track kind:', event.track.kind);
+      
+      // DOUBLE CHECK: Is this OUR OWN TRACK? If yes, IGNORE!
+      const isLocalTrack = localStreamRef.current && 
+                           localStreamRef.current.getTracks().some(t => t.id === event.track.id);
+      
+      if (isLocalTrack) {
+        console.warn('⚠️ Ignoring ontrack event from OUR OWN local track!');
+        return;
+      }
+      
+      if (event.streams && event.streams[0]) {
+        const stream = event.streams[0];
+        console.log('✅ Setting remote stream for socket:', socketId);
+        remoteStreamsRef.current[socketId] = stream;
+        setRemoteStreams(prev => ({ ...prev, [socketId]: stream }));
+      } else {
+        if (!remoteStreamsRef.current[socketId]) {
+          remoteStreamsRef.current[socketId] = new MediaStream();
+        }
+        const existingTracks = remoteStreamsRef.current[socketId].getTracks();
+        if (!existingTracks.find(t => t.id === event.track.id)) {
+          console.log('➕ Adding remote track to stream for socket:', socketId);
+          remoteStreamsRef.current[socketId].addTrack(event.track);
+          const newStream = new MediaStream(remoteStreamsRef.current[socketId].getTracks());
+          setRemoteStreams(prev => ({ ...prev, [socketId]: newStream }));
+        }
+      }
+    }; 
+
+    // Handle connection state changes
+    peer.onconnectionstatechange = () => { 
+      console.log(`🔄 Peer ${socketId} state:`, peer.connectionState);
+      if (peer.connectionState === "failed" || peer.connectionState === "closed") { 
+        console.log(`❌ Peer ${socketId} closed/failed`);
+        removePeer(socketId);
+      } else if (peer.connectionState === 'connected') {
+        console.log(`✅ Peer ${socketId} successfully connected!`);
+      }
+    }; 
+
+    return peer;
+  }, [socket]);
+
+  // ── Helper: Remove Peer Connection ──────────────────────────────────────────
+  const removePeer = useCallback((socketId) => {
+    if (peersRef.current[socketId]) {
+      peersRef.current[socketId].close();
+      delete peersRef.current[socketId];
+    }
+    if (remoteStreamsRef.current[socketId]) {
+      remoteStreamsRef.current[socketId].getTracks().forEach(t => t.stop());
+      delete remoteStreamsRef.current[socketId];
+    }
+    if (iceCandidatesRef.current[socketId]) {
+      delete iceCandidatesRef.current[socketId];
+    }
+    setRemoteStreams(prev => {
+      const newStreams = { ...prev };
+      delete newStreams[socketId];
+      return newStreams;
+    });
+  }, []);
+
+  // ── Helper: Flush ICE Candidates for Specific Peer ──────────────────────────
+  const flushIceCandidates = useCallback(async (socketId) => { 
+    const peer = peersRef.current[socketId];
+    if (!peer || !peer.remoteDescription) {
+      console.warn('⚠️ Cannot flush ICE: No peer or remote description');
+      return;
+    }
+
+    const candidates = iceCandidatesRef.current[socketId] || [];
+    console.log(`🔄 Flushing ${candidates.length} ICE candidates for socket:`, socketId);
+    
+    while (candidates.length > 0) { 
+      const candidate = candidates.shift(); 
+      try { 
+        await peer.addIceCandidate(candidate); 
+        console.log(`✅ Added ICE candidate for socket:`, socketId);
+      } catch (err) { 
+        console.error(`❌ Error adding ICE for socket ${socketId}:`, err);
+      } 
+    } 
   }, []); 
- 
- 
-   // ── Socket Events ───────────────────────────────────────────────────────── 
-   useEffect(() => { 
-     if (!socket) return; 
- 
- 
-     const handleIceCandidate = async ({ candidate }) => { 
-       if (!candidate) return; 
- 
- 
-       const peer = peerRef.current; 
- 
- 
-       if (!peer || !peer.remoteDescription) { 
-         iceCandidates.current.push(candidate); 
-         return; 
-       } 
- 
- 
-       try { 
-         await peer.addIceCandidate(candidate); 
-       } catch (err) { 
-         // Handle ICE error silently 
-       } 
-     }; 
- 
- 
-     socket.on("ice-candidate", handleIceCandidate); 
-     return () => socket.off("ice-candidate", handleIceCandidate); 
-   }, [socket]); 
- 
- 
-   // ── Browser Lifecycle / Reload Protection ────────────────────────────────── 
-   useEffect(() => { 
-     const handleUnload = () => { 
-       sessionStorage.removeItem("activeCall"); 
-     }; 
- 
-     window.addEventListener("pagehide", handleUnload); 
-     
-     return () => { 
-       window.removeEventListener("pagehide", handleUnload); 
-     }; 
-   }, [socket]); 
- 
- 
-   // ── Cleanup ──────────────────────────────────────────────────────────────── 
-   useEffect(() => { 
-     return () => { 
-       peerRef.current?.close(); 
-     }; 
-   }, []); 
- 
- 
-   return ( 
+
+  // ── Helper: Set Local Stream for All Peers ───────────────────────────────────
+  const setLocalStream = useCallback((stream) => {
+    localStreamRef.current = stream;
+    
+    // Add the new stream to all existing peers
+    Object.entries(peersRef.current).forEach(([socketId, peer]) => {
+      if (stream) {
+        stream.getTracks().forEach((track) => {
+          console.log('➕ Adding local track to existing peer:', track.kind, 'for socket:', socketId);
+          peer.addTrack(track, stream);
+        });
+      }
+    });
+  }, []);
+
+
+  // ── Signaling Actions ───────────────────────────────────────────────────── 
+  const createOffer = useCallback( 
+    async (stream, targetSocketId) => { 
+      // FIRST CHECK: Is this OUR OWN socket ID? If yes, RETURN NULL!
+      if (socket && targetSocketId === socket.id) {
+        console.warn('⚠️ Ignoring createOffer for our OWN socket ID:', targetSocketId);
+        return null;
+      }
+      
+      console.log('📡 Creating WebRTC Offer for socket:', targetSocketId);
+      localStreamRef.current = stream;
+      
+      const peer = getOrCreatePeer(targetSocketId, stream); 
+      if (!peer) {
+        console.warn('⚠️ No peer created for socket:', targetSocketId);
+        return null;
+      }
+      
+      iceCandidatesRef.current[targetSocketId] = [];
+
+      const offer = await peer.createOffer({ 
+        offerToReceiveAudio: true, 
+        offerToReceiveVideo: true, 
+      }); 
+      
+      await peer.setLocalDescription(offer); 
+      console.log('✅ Offer created for socket:', targetSocketId);
+      return offer; 
+    }, 
+    [getOrCreatePeer, socket] 
+  ); 
+
+
+  const createAnswer = useCallback( 
+    async (offer, stream, targetSocketId) => { 
+      // FIRST CHECK: Is this OUR OWN socket ID? If yes, RETURN NULL!
+      if (socket && targetSocketId === socket.id) {
+        console.warn('⚠️ Ignoring createAnswer for our OWN socket ID:', targetSocketId);
+        return null;
+      }
+      
+      console.log('📡 Creating WebRTC Answer for socket:', targetSocketId);
+      localStreamRef.current = stream;
+      
+      const peer = getOrCreatePeer(targetSocketId, stream); 
+      if (!peer) {
+        console.warn('⚠️ No peer created for socket:', targetSocketId);
+        return null;
+      }
+
+      try { 
+        await peer.setRemoteDescription(new RTCSessionDescription(offer)); 
+        await flushIceCandidates(targetSocketId); 
+
+        const answer = await peer.createAnswer({ 
+          offerToReceiveAudio: true, 
+          offerToReceiveVideo: true, 
+        }); 
+        
+        await peer.setLocalDescription(answer); 
+        console.log('✅ Answer created for socket:', targetSocketId);
+        return answer; 
+      } catch (err) { 
+        console.error('❌ Error creating answer:', err);
+        throw err; 
+      } 
+    }, 
+    [getOrCreatePeer, flushIceCandidates, socket] 
+  ); 
+
+  const setAnswer = useCallback(async (answer, targetSocketId) => { 
+    // FIRST CHECK: Is this OUR OWN socket ID? If yes, IGNORE!
+    if (socket && targetSocketId === socket.id) {
+      console.warn('⚠️ Ignoring setAnswer for our OWN socket ID:', targetSocketId);
+      return;
+    }
+    
+    console.log('📥 Received WebRTC answer for socket:', targetSocketId);
+    const peer = peersRef.current[targetSocketId];
+    if (!peer) {
+      console.warn('⚠️ No peer found for socket:', targetSocketId);
+      return;
+    }
+    
+    try { 
+      console.log('🤝 Setting remote description for socket:', targetSocketId);
+      await peer.setRemoteDescription(new RTCSessionDescription(answer)); 
+      await flushIceCandidates(targetSocketId); 
+    } catch (err) { 
+      console.error('❌ Error setting answer:', err); 
+    } 
+  }, [flushIceCandidates, socket]); 
+
+  const resetPeers = useCallback(() => { 
+    console.log('🔄 Resetting all peer connections');
+    Object.keys(peersRef.current).forEach(socketId => {
+      removePeer(socketId);
+    });
+    peersRef.current = {};
+    iceCandidatesRef.current = {};
+    remoteStreamsRef.current = {};
+    setRemoteStreams({});
+  }, [removePeer]); 
+
+
+  // ── Socket Events ───────────────────────────────────────────────────────── 
+  useEffect(() => { 
+    if (!socket) return; 
+    console.log('🔌 PeerContext: Setting up socket listeners for multiple users');
+
+    const handleIceCandidate = async ({ candidate, fromSocket }) => { 
+      if (!candidate || !fromSocket) return; 
+      console.log('📨 Received ICE candidate from socket:', fromSocket);
+
+      const peer = peersRef.current[fromSocket]; 
+      if (!peer) {
+        console.warn('⚠️ No peer found, queuing ICE for later');
+        if (!iceCandidatesRef.current[fromSocket]) {
+          iceCandidatesRef.current[fromSocket] = [];
+        }
+        iceCandidatesRef.current[fromSocket].push(candidate);
+        return;
+      }
+
+      if (!peer.remoteDescription) { 
+        console.log('📥 Queueing ICE candidate for later');
+        if (!iceCandidatesRef.current[fromSocket]) {
+          iceCandidatesRef.current[fromSocket] = [];
+        }
+        iceCandidatesRef.current[fromSocket].push(candidate);
+        return; 
+      } 
+
+      try { 
+        console.log('🤝 Adding ICE candidate from socket:', fromSocket);
+        await peer.addIceCandidate(candidate); 
+      } catch (err) { 
+        console.error('❌ Error adding ICE candidate:', err); 
+      } 
+    }; 
+
+    socket.on("ice-candidate", handleIceCandidate); 
+    return () => socket.off("ice-candidate", handleIceCandidate); 
+  }, [socket, flushIceCandidates]); 
+
+
+  // ── Cleanup ──────────────────────────────────────────────────────────────── 
+  useEffect(() => { 
+    return () => { 
+      Object.values(peersRef.current).forEach(peer => peer.close());
+    }; 
+  }, []); 
+
+
+  return ( 
     <PeerContext.Provider 
-      value={{ remoteStream, createOffer, createAnswer, setAnswer, resetPeer, setCallTarget, replaceTrack }} 
+      value={{ 
+        remoteStreams, 
+        createOffer, 
+        createAnswer, 
+        setAnswer, 
+        resetPeers, 
+        removePeer,
+        setLocalStream
+      }} 
     > 
       {children} 
     </PeerContext.Provider> 
   ); 
- }; 
- 
- 
- export const usePeer = () => { 
-   const context = useContext(PeerContext); 
-   if (!context) throw new Error("usePeer must be used within a PeerProvider"); 
-   return context; 
- }; 
+}; 
+
+export const usePeer = () => { 
+  const context = useContext(PeerContext); 
+  if (!context) throw new Error("usePeer must be used within a PeerProvider"); 
+  return context; 
+};

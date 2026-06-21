@@ -8,7 +8,7 @@ const cookieOptions = {
     httpOnly: true,
     secure: true,
     sameSite: 'none',
-};
+}; 
 
 const authenticate = asyncHandler(async (req, res, next) => { // ✅ correct signature
     const cookie = req.cookies['accessToken'];

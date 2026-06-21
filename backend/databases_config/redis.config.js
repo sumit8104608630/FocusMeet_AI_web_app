@@ -6,27 +6,28 @@ import { fileURLToPath } from 'url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Load .env from the backend root directory
 dotenv.config({ path: path.join(__dirname, '../.env') });
 
+if (!process.env.REDIS_URL) {
+    throw new Error('REDIS_URL is not defined in .env');
+}
+
 const redisClient = createClient({
-    url: process.env.REDIS_URL || 'rediss://red-cv5dli7noe9s73eh7eug:z2ACzxZkPSjjtkpheFhHoxn7zcTBmhDt@oregon-keyvalue.render.com:6379',
+    url: process.env.REDIS_URL,
     socket: {
         reconnectStrategy: (retries) => {
             if (retries > 10) {
-                console.error('Redis max retries reached. Falling back to memory.');
+                console.error('Redis max retries reached.');
                 return new Error('Redis connection failed');
             }
             return Math.min(retries * 100, 3000);
         },
         connectTimeout: 10000,
         tls: true,
-        // If you're on a local dev environment and have cert issues:
-        // rejectUnauthorized: false 
     }
 });
 
-redisClient.on('error', (err) => console.log('Redis Client Error', err));
+redisClient.on('error', (err) => console.log('Redis Client Error:', err.message));
 
 try {
     await redisClient.connect();

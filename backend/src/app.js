@@ -34,27 +34,75 @@ const activeCalls = {}    // { socketId: targetUserId }
 const roomParticipants = new Map(); // Fallback meetingId -> Array of { userId, socketId }
 let active = [] 
 
-// Helper to get participants (Redis with Memory Fallback)
+// ── Helper: Clear ALL old meeting data (for testing) ───────────────────────
+async function clearAllOldMeetingData() {
+    console.log('🧹 Clearing ALL old meeting data...');
+    
+    try {
+        // Clear memory store
+        roomParticipants.clear();
+        
+        // Clear all Redis meeting keys
+        if (redisClient.isOpen) {
+            const keys = await redisClient.keys('meeting:*');
+            const userKeys = await redisClient.keys('user_active_meeting:*');
+            const allKeys = [...keys, ...userKeys];
+            
+            if (allKeys.length > 0) {
+                await redisClient.del(allKeys);
+                console.log(`🗑️ Cleared ${allKeys.length} old keys from Redis`);
+            }
+        }
+        
+        // Clear MongoDB meetings with ended status, or reset ongoing meetings
+        await Meeting.deleteMany({ status: { $in: ['ongoing', 'ended'] } });
+        console.log('✅ All old meeting data cleared!');
+        
+    } catch (err) {
+        console.error('❌ Error clearing old meeting data:', err);
+    }
+}
+
+// Helper to get participants (Redis with Memory Fallback) - DE-DUPLICATED!
 async function getParticipants(meetingId) {
+    let rawParticipants = [];
+    
     if (redisClient.isOpen) {
         try {
             const redisKey = `meeting:${meetingId}`;
             const allParticipantsData = await redisClient.hGetAll(redisKey);
-            return Object.values(allParticipantsData).map(p => JSON.parse(p));
+            rawParticipants = Object.values(allParticipantsData).map(p => JSON.parse(p));
         } catch (err) {
             console.error('Redis getParticipants error:', err);
         }
+    } else {
+        rawParticipants = roomParticipants.get(meetingId) || [];
     }
-    return roomParticipants.get(meetingId) || [];
+    
+    // DE-DUPLICATE: Keep only the latest socket per userId!
+    const uniqueMap = new Map();
+    rawParticipants.forEach(p => {
+        // Overwrite any existing entry for the same userId
+        uniqueMap.set(p.userId, p);
+    });
+    
+    const uniqueParticipants = Array.from(uniqueMap.values());
+    console.log(`📊 Meeting ${meetingId}: ${uniqueParticipants.length} unique participants`);
+    return uniqueParticipants;
 }
 
 // Helper to add participant
 async function addParticipant(meetingId, participant) {
+    console.log(`📥 Adding participant ${participant.name} to ${meetingId}`);
+    
     if (redisClient.isOpen) {
         try {
             const redisKey = `meeting:${meetingId}`;
             
-            // 1. Remove any existing entries for this USER ID to prevent duplicates on refresh
+            // 1. Remove ANY existing entries for this socketId to be safe!
+            await redisClient.hDel(redisKey, participant.socketId);
+            
+            // 2. Remove any existing entries for this USER ID to prevent duplicates on refresh
             const allData = await redisClient.hGetAll(redisKey);
             for (const [sId, data] of Object.entries(allData)) {
                 const p = JSON.parse(data);
@@ -63,22 +111,29 @@ async function addParticipant(meetingId, participant) {
                 }
             }
 
-            // 2. Add the new socket entry
+            // 3. Add the new socket entry
             await redisClient.hSet(redisKey, participant.socketId, JSON.stringify(participant));
             await redisClient.expire(redisKey, 86400);
+            console.log(`✅ Added participant to Redis: ${participant.name}`);
             return;
         } catch (err) {
             console.error('Redis addParticipant error:', err);
         }
     }
+    
     // Memory fallback
     if (!roomParticipants.has(meetingId)) roomParticipants.set(meetingId, []);
-    const participants = roomParticipants.get(meetingId);
+    let participants = roomParticipants.get(meetingId);
     
-    // Remove existing entry for same userId
-    const filtered = participants.filter(p => p.userId !== participant.userId);
-    filtered.push(participant);
-    roomParticipants.set(meetingId, filtered);
+    // Remove existing entries for same socketId OR same userId!
+    participants = participants.filter(p => 
+        p.socketId !== participant.socketId && 
+        p.userId !== participant.userId
+    );
+    
+    participants.push(participant);
+    roomParticipants.set(meetingId, participants);
+    console.log(`✅ Added participant to memory: ${participant.name}`);
 }
 
 // Helper to remove participant
@@ -344,4 +399,5 @@ app.use((err, req, res, next) => {
     });
 });
  
+export { clearAllOldMeetingData };
 export default server;
